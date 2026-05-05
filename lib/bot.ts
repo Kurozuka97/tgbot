@@ -218,21 +218,36 @@ bot.command('model', async (ctx) => {
 
   // Show current + options
   if (!arg) {
-    const current = await getUserProvider(userId)
+    const pref = await getUserProvider(userId)
+    const current = pref.model ? `openrouter → \`${pref.model}\`` : `\`${pref.provider}\``
     const models = await getFreeModelList()
     return ctx.reply(
       `🤖 *AI Provider Settings*\n\n` +
-      `Current: \`${current}\`\n\n` +
+      `Current: ${current}\n\n` +
       `*Options:*\n` +
       `• /model auto — smart fallback (Groq → OpenRouter → Pollinations)\n` +
       `• /model groq — force Groq only\n` +
-      `• /model openrouter — force OpenRouter only (${models.length} free models)\n` +
+      `• /model openrouter — pick from ${models.length} free models\n` +
       `• /model pollinations — force Pollinations only`,
       { parse_mode: 'Markdown' }
     )
   }
 
-  const valid = ['auto', 'groq', 'openrouter', 'pollinations']
+  // Show inline keyboard for openrouter model selection
+  if (arg === 'openrouter') {
+    const models = await getFreeModelList()
+    // Split into pages of 10 buttons
+    const buttons = models.map((m) => ([{ text: m, callback_data: `setmodel:${m}` }]))
+    return ctx.reply(
+      `🔀 *Pick an OpenRouter free model:*\n\nTap to select:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: buttons }
+      }
+    )
+  }
+
+  const valid = ['auto', 'groq', 'pollinations']
   if (!valid.includes(arg)) {
     return ctx.reply(`❌ Invalid option. Choose: auto, groq, openrouter, pollinations`)
   }
@@ -241,10 +256,21 @@ bot.command('model', async (ctx) => {
   const labels: Record<string, string> = {
     auto: '🔄 Auto fallback (recommended)',
     groq: '⚡ Groq (fastest)',
-    openrouter: '🔀 OpenRouter (rotating free models)',
     pollinations: '🌸 Pollinations (no key needed)'
   }
   ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' })
+})
+
+// Handle inline keyboard callback for model selection
+bot.action(/^setmodel:(.+)$/, async (ctx) => {
+  const userId = ctx.from?.id!
+  const model = ctx.match[1]
+  await setUserProvider(userId, 'openrouter', model)
+  await ctx.editMessageText(
+    `✅ *OpenRouter model set!*\n\n\`${model}\`\n\nAll your messages will use this model now.`,
+    { parse_mode: 'Markdown' }
+  )
+  await ctx.answerCbQuery()
 })
 
 bot.command('models', async (ctx) => {
