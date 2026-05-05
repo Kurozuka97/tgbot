@@ -87,7 +87,8 @@ bot.help((ctx) => {
     `/explain <topic> — explain anything simply\n` +
     `/roast <topic> — roast anything 🔥\n` +
     `/quote — motivational quote\n` +
-    `/model — switch AI provider\n\n` +
+    `/model — switch AI provider\n` +
+    `/models — list all free OpenRouter models\n\n` +
     `*Image:*\n` +
     `/imagine <prompt> — generate image\n` +
     `/sticker <prompt> — generate sticker\n\n` +
@@ -244,6 +245,22 @@ bot.command('model', async (ctx) => {
     pollinations: '🌸 Pollinations (no key needed)'
   }
   ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' })
+})
+
+bot.command('models', async (ctx) => {
+  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('⏳ Fetching models...')
+  try {
+    const models = await getFreeModelList()
+    const list = models.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, msg.message_id, undefined,
+      `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch (err) {
+    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+  }
 })
 
 bot.command('imagine', async (ctx) => {
