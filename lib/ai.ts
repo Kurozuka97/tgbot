@@ -85,12 +85,16 @@ async function fetchFreeModels(): Promise<string[]> {
   return freeModels
 }
 
-async function openrouterChat(messages: Message[]): Promise<string> {
-  const models = await fetchFreeModels()
-  if (models.length === 0) throw new Error('No free models available')
-
-  const model = models[modelIndex % models.length]
-  modelIndex++
+async function openrouterChat(messages: Message[], specificModel?: string): Promise<string> {
+  let model: string
+  if (specificModel) {
+    model = specificModel
+  } else {
+    const models = await fetchFreeModels()
+    if (models.length === 0) throw new Error('No free models available')
+    model = models[modelIndex % models.length]
+    modelIndex++
+  }
 
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -115,17 +119,22 @@ async function pollinationsChat(prompt: string): Promise<string> {
 }
 
 // ─── User model preference (Firestore) ───────────────────────────────────────
-export async function getUserProvider(userId: number): Promise<string> {
+export async function getUserProvider(userId: number): Promise<{ provider: string; model?: string }> {
   try {
     const doc = await db.collection('tgbot_prefs').doc(String(userId)).get()
-    return doc.exists ? (doc.data()?.provider ?? 'auto') : 'auto'
+    if (!doc.exists) return { provider: 'auto' }
+    const data = doc.data()!
+    return { provider: data.provider ?? 'auto', model: data.model }
   } catch {
-    return 'auto'
+    return { provider: 'auto' }
   }
 }
 
-export async function setUserProvider(userId: number, provider: string): Promise<void> {
-  await db.collection('tgbot_prefs').doc(String(userId)).set({ provider })
+export async function setUserProvider(userId: number, provider: string, model?: string): Promise<void> {
+  const data: any = { provider }
+  if (model) data.model = model
+  else data.model = null
+  await db.collection('tgbot_prefs').doc(String(userId)).set(data)
 }
 
 export async function getFreeModelList(): Promise<string[]> {
@@ -138,7 +147,8 @@ export async function chat(
   imageParts: { data: string; mimeType: string }[] = [],
   userId?: number
 ): Promise<string> {
-  const provider = userId ? await getUserProvider(userId) : 'auto'
+  const pref = userId ? await getUserProvider(userId) : { provider: 'auto' }
+  const { provider, model: specificModel } = pref
 
   // Vision request
   if (imageParts.length > 0) {
@@ -168,7 +178,7 @@ export async function chat(
     return '❌ Groq unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'openrouter') {
-    try { return await openrouterChat(messages) } catch {}
+    try { return await openrouterChat(messages, specificModel) } catch {}
     return '❌ OpenRouter unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'pollinations') {
