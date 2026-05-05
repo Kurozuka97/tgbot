@@ -86,7 +86,8 @@ bot.help((ctx) => {
     `/summarize <url> — summarize a webpage\n` +
     `/explain <topic> — explain anything simply\n` +
     `/roast <topic> — roast anything 🔥\n` +
-    `/quote — motivational quote\n\n` +
+    `/quote — motivational quote\n` +
+    `/model — switch AI provider\n\n` +
     `*Image:*\n` +
     `/imagine <prompt> — generate image\n` +
     `/sticker <prompt> — generate sticker\n\n` +
