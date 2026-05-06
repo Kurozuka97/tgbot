@@ -405,6 +405,18 @@ bot.command('logs', async (ctx) => {
 // ─── Existing Commands ────────────────────────────────────────────────────────
 
 bot.command('help', (ctx) => {
+  const userId = ctx.from?.id ?? 0
+  const adminSection = isAdmin(userId)
+    ? `\n*👑 Admin:*\n` +
+      `/admin — pending requests\n` +
+      `/users — list approved users\n` +
+      `/allow <id> — approve user\n` +
+      `/revoke <id> — remove access\n` +
+      `/ban <id> — permanent ban\n` +
+      `/unban <id> — unban user\n` +
+      `/logs — audit log\n`
+    : ''
+
   ctx.reply(
     `*Available Commands:*\n\n` +
     `*AI:*\n` +
@@ -427,7 +439,8 @@ bot.command('help', (ctx) => {
     `/calc <expression> — calculator\n\n` +
     `*Inline:*\n` +
     `@botname <query> — AI anywhere\n` +
-    `@botname imagine <prompt> — image anywhere`,
+    `@botname imagine <prompt> — image anywhere` +
+    adminSection,
     { parse_mode: 'Markdown' }
   )
 })
