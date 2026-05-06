@@ -284,11 +284,8 @@ bot.command('imagine', async (ctx) => {
   const msg = await ctx.reply('🎨 Generating image...')
   try {
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error('Failed to fetch image')
-    const buffer = Buffer.from(await res.arrayBuffer())
     await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id)
-    await ctx.replyWithPhoto({ source: buffer }, { caption: `🎨 *${prompt}*`, parse_mode: 'Markdown' })
+    await ctx.replyWithPhoto({ url }, { caption: `🎨 *${prompt}*`, parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
   }
@@ -302,11 +299,8 @@ bot.command('sticker', async (ctx) => {
   try {
     const stickerPrompt = `${prompt}, sticker art style, bold outlines, vibrant colors, white background, cute kawaii style`
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(stickerPrompt)}?width=512&height=512&nologo=true&seed=${Date.now()}`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error('Failed to generate sticker')
-    const buffer = Buffer.from(await res.arrayBuffer())
     await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id)
-    await ctx.replyWithPhoto({ source: buffer }, { caption: `🎭 *${prompt}*`, parse_mode: 'Markdown' })
+    await ctx.replyWithPhoto({ url }, { caption: `🎭 *${prompt}*`, parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
   }
