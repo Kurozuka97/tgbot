@@ -12,6 +12,9 @@ function isAllowed(ctx: Context) {
   return ALLOWED_USERS.includes(ctx.from?.id ?? 0)
 }
 
+// Track users waiting to pick a model: userId → model list
+const pendingModelSelection = new Map<number, string[]>()
+
 async function fetchFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string }> {
   const file = await bot.telegram.getFile(fileId)
   const url = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`
@@ -27,7 +30,6 @@ async function fetchFile(fileId: string): Promise<{ buffer: Buffer; mimeType: st
 }
 
 async function fetchUrl(url: string): Promise<string> {
-  // Try direct fetch first, fallback to a text extraction approach
   try {
     const res = await fetch(url, {
       headers: {
@@ -44,7 +46,6 @@ async function fetchUrl(url: string): Promise<string> {
                .trim()
                .slice(0, 4000)
   } catch {
-    // Fallback: ask AI to describe the URL content from its knowledge
     return `[Could not fetch URL directly. Using AI knowledge for: ${url}]`
   }
 }
@@ -60,7 +61,8 @@ bot.start((ctx) => {
     `• /explain <topic> — explain anything simply\n` +
     `• /roast <topic> — roast anything 🔥\n` +
     `• /quote — motivational quote\n` +
-    `• /model — switch AI provider\n\n` +
+    `• /model — switch AI provider\n` +
+    `• /models — list all free OpenRouter models\n\n` +
     `*Image Commands:*\n` +
     `• /imagine <prompt> — generate an image\n` +
     `• /sticker <prompt> — generate a sticker\n\n` +
@@ -131,11 +133,9 @@ bot.command('translate', async (ctx) => {
   const args = ctx.message.text.replace(/^\/translate(@\w+)?\s*/, '').trim()
   if (!args) return ctx.reply('Usage: /translate <lang> <text>\nExample: /translate ms Hello world\nLanguage codes: ms, zh, ja, ko, fr, de, ar, etc.')
 
-  // Parse: first word = lang code, rest = text
   const spaceIdx = args.indexOf(' ')
   let lang: string, text: string
   if (spaceIdx === -1 || args.split(' ')[0].length > 5) {
-    // No lang specified, default to English
     lang = 'English'
     text = args
   } else {
@@ -216,7 +216,6 @@ bot.command('model', async (ctx) => {
   const arg = ctx.message.text.replace(/^\/model(@\w+)?\s*/, '').trim().toLowerCase()
   const userId = ctx.from?.id!
 
-  // Show current + options
   if (!arg) {
     const pref = await getUserProvider(userId)
     const current = pref.model ? `openrouter → \`${pref.model}\`` : `\`${pref.provider}\``
@@ -233,17 +232,14 @@ bot.command('model', async (ctx) => {
     )
   }
 
-  // Show inline keyboard for openrouter model selection
   if (arg === 'openrouter') {
     const models = await getFreeModelList()
-    // Split into pages of 10 buttons
-    const buttons = models.map((m) => ([{ text: m, callback_data: `setmodel:${m}` }]))
+    pendingModelSelection.set(userId, models)
+    const list = models.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
-      `🔀 *Pick an OpenRouter free model:*\n\nTap to select:`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: buttons }
-      }
+      `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}\n\n` +
+      `Reply with the *number* to select.\nType /model auto to cancel.`,
+      { parse_mode: 'Markdown' }
     )
   }
 
@@ -252,6 +248,7 @@ bot.command('model', async (ctx) => {
     return ctx.reply(`❌ Invalid option. Choose: auto, groq, openrouter, pollinations`)
   }
 
+  pendingModelSelection.delete(userId)
   await setUserProvider(userId, arg)
   const labels: Record<string, string> = {
     auto: '🔄 Auto fallback (recommended)',
@@ -259,18 +256,6 @@ bot.command('model', async (ctx) => {
     pollinations: '🌸 Pollinations (no key needed)'
   }
   ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' })
-})
-
-// Handle inline keyboard callback for model selection
-bot.action(/^setmodel:(.+)$/, async (ctx) => {
-  const userId = ctx.from?.id!
-  const model = ctx.match[1]
-  await setUserProvider(userId, 'openrouter', model)
-  await ctx.editMessageText(
-    `✅ *OpenRouter model set!*\n\n\`${model}\`\n\nAll your messages will use this model now.`,
-    { parse_mode: 'Markdown' }
-  )
-  await ctx.answerCbQuery()
 })
 
 bot.command('models', async (ctx) => {
@@ -387,9 +372,29 @@ bot.on('document', async (ctx) => {
 
 bot.on('text', async (ctx) => {
   if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  const userId = ctx.from?.id!
+  const text = ctx.message.text
+
+  // Check if user is in model selection mode
+  if (pendingModelSelection.has(userId)) {
+    const models = pendingModelSelection.get(userId)!
+    const num = parseInt(text.trim())
+    if (isNaN(num) || num < 1 || num > models.length) {
+      return ctx.reply(`❌ Invalid. Pick 1–${models.length}, or /model auto to cancel.`)
+    }
+    const selected = models[num - 1]
+    pendingModelSelection.delete(userId)
+    await setUserProvider(userId, 'openrouter', selected)
+    return ctx.reply(
+      `✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+
+  // Normal AI chat
   const msg = await ctx.reply('💭 Thinking...')
   try {
-    const result = await chat(ctx.message.text, [], ctx.from?.id)
+    const result = await chat(text, [], userId)
     await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Error: ${String(err)}`)
