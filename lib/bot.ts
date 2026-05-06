@@ -1,3 +1,4 @@
+process.emitWarning = () => {}
 import { Bot, InputFile } from 'grammy'
 import {
   chat, chatWithSearch, fileToGenerativePart,
