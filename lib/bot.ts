@@ -1,27 +1,27 @@
-import { Telegraf, Context } from 'telegraf'
+import { Bot, InputFile } from 'grammy'
 import {
   chat, chatWithSearch, fileToGenerativePart,
   getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS,
   getHistory, appendHistory, clearHistory,
-  getPersona, setPersona, getSystemPrompt, PERSONA_LIST
+  getPersona, setPersona, PERSONA_LIST
 } from './ai'
 
-const bot = new Telegraf(process.env.BOT_TOKEN!)
+const bot = new Bot(process.env.BOT_TOKEN!)
 
 const ALLOWED_USERS = process.env.ALLOWED_USERS
   ? process.env.ALLOWED_USERS.split(',').map(Number)
   : []
 
-function isAllowed(ctx: Context) {
+function isAllowed(userId: number) {
   if (ALLOWED_USERS.length === 0) return true
-  return ALLOWED_USERS.includes(ctx.from?.id ?? 0)
+  return ALLOWED_USERS.includes(userId)
 }
 
 const pendingModelSelection = new Map<number, string[]>()
 const pendingMistralSelection = new Map<number, boolean>()
 
 async function fetchFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string }> {
-  const file = await bot.telegram.getFile(fileId)
+  const file = await bot.api.getFile(fileId)
   const url = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`
   const res = await fetch(url)
   const buffer = Buffer.from(await res.arrayBuffer())
@@ -55,7 +55,7 @@ async function fetchUrl(url: string): Promise<string> {
   }
 }
 
-bot.start((ctx) => {
+bot.command('start', (ctx) => {
   ctx.reply(
     `👋 *Hey! I'm your multipurpose AI assistant.*\n\n` +
     `*AI Commands:*\n` +
@@ -85,7 +85,7 @@ bot.start((ctx) => {
   )
 })
 
-bot.help((ctx) => {
+bot.command('help', (ctx) => {
   ctx.reply(
     `*Available Commands:*\n\n` +
     `*AI:*\n` +
@@ -112,41 +112,40 @@ bot.help((ctx) => {
 })
 
 bot.command('search', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const query = ctx.message.text.replace(/^\/search(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const query = ctx.match.trim()
   if (!query) return ctx.reply('Usage: /search <query>')
   const msg = await ctx.reply('🔍 Searching...')
   try {
     const result = await chatWithSearch(query, ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Search failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Search failed: ${String(err)}`)
   }
 })
 
 bot.command('weather', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const city = ctx.message.text.replace(/^\/weather(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const city = ctx.match.trim()
   if (!city) return ctx.reply('Usage: /weather <city>')
   const msg = await ctx.reply('🌤️ Checking weather...')
   try {
     const result = await chat(`What is the typical/current weather in ${city}? Provide temperature range (Celsius), humidity, wind, and general conditions. Format nicely with emojis. Note if data may not be real-time.`, [], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('translate', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const args = ctx.message.text.replace(/^\/translate(@\w+)?\s*/, '').trim()
-  if (!args) return ctx.reply('Usage: /translate <lang> <text>\nExample: /translate ms Hello world\nLanguage codes: ms, zh, ja, ko, fr, de, ar, etc.')
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const args = ctx.match.trim()
+  if (!args) return ctx.reply('Usage: /translate <lang> <text>\nExample: /translate ms Hello world')
 
   const spaceIdx = args.indexOf(' ')
   let lang: string, text: string
   if (spaceIdx === -1 || args.split(' ')[0].length > 5) {
-    lang = 'English'
-    text = args
+    lang = 'English'; text = args
   } else {
     lang = args.slice(0, spaceIdx)
     text = args.slice(spaceIdx + 1).trim()
@@ -159,70 +158,69 @@ bot.command('translate', async (ctx) => {
     vi: 'Vietnamese', id: 'Indonesian', en: 'English'
   }
   const targetLang = langNames[lang.toLowerCase()] ?? lang
-
   const msg = await ctx.reply('🌐 Translating...')
   try {
     const result = await chat(`Translate the following text to ${targetLang}. Reply with only the translation, nothing else:\n\n${text}`, [], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `🌐 *${targetLang}:*\n${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 *${targetLang}:*\n${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('summarize', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const url = ctx.message.text.replace(/^\/summarize(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const url = ctx.match.trim()
   if (!url) return ctx.reply('Usage: /summarize <url>')
   const msg = await ctx.reply('📄 Fetching and summarizing...')
   try {
     const content = await fetchUrl(url)
     const result = await chat(`Summarize the following content in clear bullet points. Be concise:\n\n${content}`, [], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `📄 *Summary:*\n${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 *Summary:*\n${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('explain', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const topic = ctx.message.text.replace(/^\/explain(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const topic = ctx.match.trim()
   if (!topic) return ctx.reply('Usage: /explain <topic>')
   const msg = await ctx.reply('🧠 Thinking...')
   try {
     const result = await chat(`Explain "${topic}" in simple terms that anyone can understand. Be concise and use examples.`, [], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('roast', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const topic = ctx.message.text.replace(/^\/roast(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const topic = ctx.match.trim()
   if (!topic) return ctx.reply('Usage: /roast <topic or name>')
   const msg = await ctx.reply('🔥 Roasting...')
   try {
     const result = await chat(`Give a funny, savage but lighthearted roast about: "${topic}". Keep it humorous, not mean-spirited. 3-5 sentences.`, [], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `🔥 ${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('quote', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('✨ Generating quote...')
   try {
     const result = await chat('Generate one unique, powerful motivational quote. Format: "quote" — Author (or "Unknown"). Just the quote, nothing else.', [], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `✨ ${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `✨ ${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('persona', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const arg = ctx.message.text.replace(/^\/persona(@\w+)?\s*/, '').trim().toLowerCase()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const arg = ctx.match.trim().toLowerCase()
   const userId = ctx.from?.id!
 
   if (!arg) {
@@ -243,7 +241,7 @@ bot.command('persona', async (ctx) => {
 })
 
 bot.command('continue', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const userId = ctx.from?.id!
   const history = await getHistory(userId)
   if (history.length === 0) return ctx.reply('💭 No conversation history to continue.')
@@ -252,31 +250,29 @@ bot.command('continue', async (ctx) => {
     const result = await chat('Continue from where you left off.', [], userId, history)
     await appendHistory(userId, 'user', 'Continue from where you left off.')
     await appendHistory(userId, 'assistant', result)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('clear', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   await clearHistory(ctx.from?.id!)
   ctx.reply('🗑️ Conversation memory cleared.')
 })
 
 bot.command('model', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const arg = ctx.message.text.replace(/^\/model(@\w+)?\s*/, '').trim().toLowerCase()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const arg = ctx.match.trim().toLowerCase()
   const userId = ctx.from?.id!
 
   if (!arg) {
     const pref = await getUserProvider(userId)
-    const current = pref.model
-      ? `${pref.provider} → \`${pref.model}\``
-      : `\`${pref.provider}\``
+    const current = pref.model ? `${pref.provider} → \`${pref.model}\`` : `\`${pref.provider}\``
     return ctx.reply(
       `🤖 *AI Provider Settings*\n\nCurrent: ${current}\n\n*Options:*\n` +
-      `• /model auto — smart fallback (Groq → Mistral → OpenRouter → Pollinations)\n` +
+      `• /model auto — smart fallback\n` +
       `• /model groq — force Groq only\n` +
       `• /model mistral — pick from list of models\n` +
       `• /model openrouter — pick from list of free models\n` +
@@ -306,9 +302,7 @@ bot.command('model', async (ctx) => {
   }
 
   const valid = ['auto', 'groq', 'pollinations']
-  if (!valid.includes(arg)) {
-    return ctx.reply(`❌ Invalid option. Choose: auto, groq, mistral, openrouter, pollinations`)
-  }
+  if (!valid.includes(arg)) return ctx.reply(`❌ Invalid option. Choose: auto, groq, mistral, openrouter, pollinations`)
 
   pendingModelSelection.delete(userId)
   pendingMistralSelection.delete(userId)
@@ -322,37 +316,37 @@ bot.command('model', async (ctx) => {
 })
 
 bot.command('imagine', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const prompt = ctx.message.text.replace(/^\/imagine(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const prompt = ctx.match.trim()
   if (!prompt) return ctx.reply('Usage: /imagine <prompt>')
   const msg = await ctx.reply('🎨 Generating image...')
   try {
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`
-    await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id)
-    await ctx.replyWithPhoto({ url }, { caption: `🎨 *${prompt}*`, parse_mode: 'Markdown' })
+    await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
+    await ctx.replyWithPhoto(url, { caption: `🎨 *${prompt}*`, parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('sticker', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const prompt = ctx.message.text.replace(/^\/sticker(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const prompt = ctx.match.trim()
   if (!prompt) return ctx.reply('Usage: /sticker <prompt>')
   const msg = await ctx.reply('🎭 Generating sticker...')
   try {
     const stickerPrompt = `${prompt}, sticker art style, bold outlines, vibrant colors, white background, cute kawaii style`
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(stickerPrompt)}?width=512&height=512&nologo=true&seed=${Date.now()}`
-    await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id)
-    await ctx.replyWithPhoto({ url }, { caption: `🎭 *${prompt}*`, parse_mode: 'Markdown' })
+    await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
+    await ctx.replyWithPhoto(url, { caption: `🎭 *${prompt}*`, parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('qr', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const text = ctx.message.text.replace(/^\/qr(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const text = ctx.match.trim()
   if (!text) return ctx.reply('Usage: /qr <text or url>')
   const msg = await ctx.reply('📱 Generating QR code...')
   try {
@@ -360,16 +354,16 @@ bot.command('qr', async (ctx) => {
     const res = await fetch(url)
     if (!res.ok) throw new Error('Failed to generate QR')
     const buffer = Buffer.from(await res.arrayBuffer())
-    await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id)
-    await ctx.replyWithPhoto({ source: buffer }, { caption: `📱 QR Code for: \`${text}\``, parse_mode: 'Markdown' })
+    await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
+    await ctx.replyWithPhoto(new InputFile(buffer, 'qr.png'), { caption: `📱 QR Code for: \`${text}\``, parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.command('calc', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const expr = ctx.message.text.replace(/^\/calc(@\w+)?\s*/, '').trim()
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const expr = ctx.match.trim()
   if (!expr) return ctx.reply('Usage: /calc <expression>\nExample: /calc 2 + 2 * 10')
   try {
     const sanitized = expr.replace(/[^0-9+\-*/.() %]/g, '')
@@ -381,8 +375,8 @@ bot.command('calc', async (ctx) => {
   }
 })
 
-bot.on('photo', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+bot.on('message:photo', async (ctx) => {
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('🖼️ Analyzing image...')
   try {
     const photo = ctx.message.photo.at(-1)!
@@ -390,14 +384,14 @@ bot.on('photo', async (ctx) => {
     const part = fileToGenerativePart(buffer, mimeType)
     const caption = ctx.message.caption ?? 'Describe this image in detail.'
     const result = await chat(caption, [part], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
-bot.on('document', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+bot.on('message:document', async (ctx) => {
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('📄 Reading file...')
   try {
     const doc = ctx.message.document
@@ -405,14 +399,14 @@ bot.on('document', async (ctx) => {
     const part = fileToGenerativePart(buffer, mimeType)
     const caption = ctx.message.caption ?? 'Summarize the contents of this file.'
     const result = await chat(caption, [part], ctx.from?.id)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
-bot.on('text', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+bot.on('message:text', async (ctx) => {
+  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const userId = ctx.from?.id!
   const text = ctx.message.text
 
@@ -425,10 +419,7 @@ bot.on('text', async (ctx) => {
     const selected = modelList[num - 1]
     pendingMistralSelection.delete(userId)
     await setUserProvider(userId, 'mistral', selected)
-    return ctx.reply(
-      `✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`,
-      { parse_mode: 'Markdown' }
-    )
+    return ctx.reply(`✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'Markdown' })
   }
 
   if (pendingModelSelection.has(userId)) {
@@ -440,22 +431,18 @@ bot.on('text', async (ctx) => {
     const selected = models[num - 1]
     pendingModelSelection.delete(userId)
     await setUserProvider(userId, 'openrouter', selected)
-    return ctx.reply(
-      `✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`,
-      { parse_mode: 'Markdown' }
-    )
+    return ctx.reply(`✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'Markdown' })
   }
 
-  // Normal AI chat with history
   const msg = await ctx.reply('💭 Thinking...')
   try {
     const history = await getHistory(userId)
     const result = await chat(text, [], userId, history)
     await appendHistory(userId, 'user', text)
     await appendHistory(userId, 'assistant', result)
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Error: ${String(err)}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Error: ${String(err)}`)
   }
 })
 
