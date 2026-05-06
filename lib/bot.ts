@@ -6,20 +6,32 @@ import {
   getHistory, appendHistory, clearHistory,
   getPersona, setPersona, PERSONA_LIST
 } from './ai'
+import {
+  isUserAllowed, addAllowedUser, removeAllowedUser,
+  addPendingUser, removePendingUser, getPendingUsers
+} from './firebase'
 
 const bot = new Bot(process.env.BOT_TOKEN!)
 
-const ALLOWED_USERS = process.env.ALLOWED_USERS
-  ? process.env.ALLOWED_USERS.split(',').map(Number)
-  : []
+// ─── Admin Setup ──────────────────────────────────────────────────────────────
 
-function isAllowed(userId: number) {
-  if (ALLOWED_USERS.length === 0) return true
-  return ALLOWED_USERS.includes(userId)
+const ADMIN_ID = Number(process.env.ADMIN_ID)
+
+function isAdmin(userId: number) {
+  return userId === ADMIN_ID
 }
+
+async function isAllowed(userId: number): Promise<boolean> {
+  if (isAdmin(userId)) return true
+  return isUserAllowed(userId)
+}
+
+// ─── Pending Tracking (in-memory to avoid double-notify) ─────────────────────
 
 const pendingModelSelection = new Map<number, string[]>()
 const pendingMistralSelection = new Map<number, boolean>()
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function fetchFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string }> {
   const file = await bot.api.getFile(fileId)
@@ -56,38 +68,152 @@ async function fetchUrl(url: string): Promise<string> {
   }
 }
 
-bot.command('start', (ctx) => {
-  ctx.reply(
-    `👋 *Hey! I'm your multipurpose AI assistant.*\n\n` +
-    `*AI Commands:*\n` +
-    `• /search <query> — AI-powered search\n` +
-    `• /weather <city> — current weather\n` +
-    `• /translate <lang> <text> — translate text\n` +
-    `• /summarize <url> — summarize a webpage\n` +
-    `• /explain <topic> — explain anything simply\n` +
-    `• /roast <topic> — roast anything 🔥\n` +
-    `• /quote — motivational quote\n` +
-    `• /model — switch AI provider\n` +
-    `• /persona — switch AI personality\n` +
-    `• /continue — continue last response\n` +
-    `• /clear — clear conversation memory\n\n` +
-    `*Image Commands:*\n` +
-    `• /imagine <prompt> — generate an image\n` +
-    `• /sticker <prompt> — generate a sticker\n\n` +
-    `*Utility Commands:*\n` +
-    `• /qr <text> — generate QR code\n` +
-    `• /calc <expression> — calculator\n\n` +
-    `*Auto:*\n` +
-    `• Send any text → AI chat\n` +
-    `• Send image → analyze\n` +
-    `• Send file → read & summarize\n\n` +
-    `*Inline Mode:*\n` +
-    `• @botname <query> — AI anywhere\n` +
-    `• @botname imagine <prompt> — generate image anywhere\n\n` +
-    `Type /help to see this again!`,
+// ─── /start ───────────────────────────────────────────────────────────────────
+
+bot.command('start', async (ctx) => {
+  const userId = ctx.from?.id ?? 0
+  const username = ctx.from?.username
+  const firstName = ctx.from?.first_name ?? 'Unknown'
+
+  // If admin or already allowed — show full menu
+  if (await isAllowed(userId)) {
+    return ctx.reply(
+      `👋 *Hey! I'm your multipurpose AI assistant.*\n\n` +
+      `*AI Commands:*\n` +
+      `• /search <query> — AI-powered search\n` +
+      `• /weather <city> — current weather\n` +
+      `• /translate <lang> <text> — translate text\n` +
+      `• /summarize <url> — summarize a webpage\n` +
+      `• /explain <topic> — explain anything simply\n` +
+      `• /roast <topic> — roast anything 🔥\n` +
+      `• /quote — motivational quote\n` +
+      `• /model — switch AI provider\n` +
+      `• /persona — switch AI personality\n` +
+      `• /continue — continue last response\n` +
+      `• /clear — clear conversation memory\n\n` +
+      `*Image Commands:*\n` +
+      `• /imagine <prompt> — generate an image\n` +
+      `• /sticker <prompt> — generate a sticker\n\n` +
+      `*Utility Commands:*\n` +
+      `• /qr <text> — generate QR code\n` +
+      `• /calc <expression> — calculator\n\n` +
+      `*Auto:*\n` +
+      `• Send any text → AI chat\n` +
+      `• Send image → analyze\n` +
+      `• Send file → read & summarize\n\n` +
+      `*Inline Mode:*\n` +
+      `• @botname <query> — AI anywhere\n` +
+      `• @botname imagine <prompt> — generate image anywhere\n\n` +
+      `Type /help to see this again!`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+
+  // Not allowed — register as pending and notify admin
+  await addPendingUser({
+    userId,
+    username,
+    firstName,
+    requestedAt: Date.now()
+  })
+
+  await ctx.reply(
+    `👋 Hey *${firstName}*!\n\n` +
+    `Your access request has been sent to the admin. ` +
+    `You'll be able to use the bot once approved. ⏳`,
+    { parse_mode: 'Markdown' }
+  )
+
+  // Notify admin
+  const userTag = username ? `@${username}` : `[${firstName}](tg://user?id=${userId})`
+  await bot.api.sendMessage(
+    ADMIN_ID,
+    `🔔 *New Access Request*\n\n` +
+    `User: ${userTag}\n` +
+    `ID: \`${userId}\`\n\n` +
+    `Use /allow ${userId} to approve, or /block ${userId} to reject.`,
     { parse_mode: 'Markdown' }
   )
 })
+
+// ─── Admin Commands ───────────────────────────────────────────────────────────
+
+bot.command('admin', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+
+  const pending = await getPendingUsers()
+
+  if (pending.length === 0) {
+    return ctx.reply('✅ No pending access requests.')
+  }
+
+  const list = pending.map(u => {
+    const tag = u.username ? `@${u.username}` : u.firstName ?? 'Unknown'
+    const date = new Date(u.requestedAt).toLocaleString()
+    return `• ${tag} — ID: \`${u.userId}\`\n  Requested: ${date}`
+  }).join('\n\n')
+
+  return ctx.reply(
+    `👥 *Pending Access Requests (${pending.length}):*\n\n${list}\n\n` +
+    `Use /allow <user\\_id> to approve\n` +
+    `Use /block <user\\_id> to reject`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+bot.command('allow', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+
+  const arg = ctx.match.trim()
+  if (!arg) return ctx.reply('Usage: /allow <user_id>')
+
+  const targetId = Number(arg)
+  if (isNaN(targetId)) return ctx.reply('❌ Invalid user ID.')
+
+  await addAllowedUser(targetId)
+  await removePendingUser(targetId)
+
+  // Notify the approved user
+  try {
+    await bot.api.sendMessage(
+      targetId,
+      `✅ Your access has been *approved!*\n\nSend /start to begin using the bot.`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch {
+    // User may have never messaged bot, can't notify
+  }
+
+  return ctx.reply(`✅ User \`${targetId}\` has been approved.`, { parse_mode: 'Markdown' })
+})
+
+bot.command('block', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+
+  const arg = ctx.match.trim()
+  if (!arg) return ctx.reply('Usage: /block <user_id>')
+
+  const targetId = Number(arg)
+  if (isNaN(targetId)) return ctx.reply('❌ Invalid user ID.')
+
+  await removeAllowedUser(targetId)
+  await removePendingUser(targetId)
+
+  // Notify the rejected user
+  try {
+    await bot.api.sendMessage(
+      targetId,
+      `❌ Your access request has been *rejected.*\n\nContact the admin if you think this is a mistake.`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch {
+    // Can't notify
+  }
+
+  return ctx.reply(`🚫 User \`${targetId}\` has been blocked/rejected.`, { parse_mode: 'Markdown' })
+})
+
+// ─── Existing Commands ────────────────────────────────────────────────────────
 
 bot.command('help', (ctx) => {
   ctx.reply(
@@ -119,7 +245,7 @@ bot.command('help', (ctx) => {
 })
 
 bot.command('search', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const query = ctx.match.trim()
   if (!query) return ctx.reply('Usage: /search <query>')
   const msg = await ctx.reply('🔍 Searching...')
@@ -132,7 +258,7 @@ bot.command('search', async (ctx) => {
 })
 
 bot.command('weather', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const city = ctx.match.trim()
   if (!city) return ctx.reply('Usage: /weather <city>')
   const msg = await ctx.reply('🌤️ Checking weather...')
@@ -145,7 +271,7 @@ bot.command('weather', async (ctx) => {
 })
 
 bot.command('translate', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const args = ctx.match.trim()
   if (!args) return ctx.reply('Usage: /translate <lang> <text>\nExample: /translate ms Hello world')
 
@@ -175,7 +301,7 @@ bot.command('translate', async (ctx) => {
 })
 
 bot.command('summarize', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const url = ctx.match.trim()
   if (!url) return ctx.reply('Usage: /summarize <url>')
   const msg = await ctx.reply('📄 Fetching and summarizing...')
@@ -189,7 +315,7 @@ bot.command('summarize', async (ctx) => {
 })
 
 bot.command('explain', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const topic = ctx.match.trim()
   if (!topic) return ctx.reply('Usage: /explain <topic>')
   const msg = await ctx.reply('🧠 Thinking...')
@@ -202,7 +328,7 @@ bot.command('explain', async (ctx) => {
 })
 
 bot.command('roast', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const topic = ctx.match.trim()
   if (!topic) return ctx.reply('Usage: /roast <topic or name>')
   const msg = await ctx.reply('🔥 Roasting...')
@@ -215,7 +341,7 @@ bot.command('roast', async (ctx) => {
 })
 
 bot.command('quote', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('✨ Generating quote...')
   try {
     const result = await chat('Generate one unique, powerful motivational quote. Format: "quote" — Author (or "Unknown"). Just the quote, nothing else.', [], ctx.from?.id)
@@ -226,7 +352,7 @@ bot.command('quote', async (ctx) => {
 })
 
 bot.command('persona', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const arg = ctx.match.trim().toLowerCase()
   const userId = ctx.from?.id!
 
@@ -248,7 +374,7 @@ bot.command('persona', async (ctx) => {
 })
 
 bot.command('continue', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const userId = ctx.from?.id!
   const history = await getHistory(userId)
   if (history.length === 0) return ctx.reply('💭 No conversation history to continue.')
@@ -264,13 +390,13 @@ bot.command('continue', async (ctx) => {
 })
 
 bot.command('clear', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   await clearHistory(ctx.from?.id!)
   ctx.reply('🗑️ Conversation memory cleared.')
 })
 
 bot.command('model', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const arg = ctx.match.trim().toLowerCase()
   const userId = ctx.from?.id!
 
@@ -323,7 +449,7 @@ bot.command('model', async (ctx) => {
 })
 
 bot.command('imagine', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const prompt = ctx.match.trim()
   if (!prompt) return ctx.reply('Usage: /imagine <prompt>')
   const msg = await ctx.reply('🎨 Generating image...')
@@ -337,7 +463,7 @@ bot.command('imagine', async (ctx) => {
 })
 
 bot.command('sticker', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const prompt = ctx.match.trim()
   if (!prompt) return ctx.reply('Usage: /sticker <prompt>')
   const msg = await ctx.reply('🎭 Generating sticker...')
@@ -352,7 +478,7 @@ bot.command('sticker', async (ctx) => {
 })
 
 bot.command('qr', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const text = ctx.match.trim()
   if (!text) return ctx.reply('Usage: /qr <text or url>')
   const msg = await ctx.reply('📱 Generating QR code...')
@@ -369,7 +495,7 @@ bot.command('qr', async (ctx) => {
 })
 
 bot.command('calc', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const expr = ctx.match.trim()
   if (!expr) return ctx.reply('Usage: /calc <expression>\nExample: /calc 2 + 2 * 10')
   try {
@@ -382,8 +508,10 @@ bot.command('calc', async (ctx) => {
   }
 })
 
+// ─── Media Handlers ───────────────────────────────────────────────────────────
+
 bot.on('message:photo', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('🖼️ Analyzing image...')
   try {
     const photo = ctx.message.photo.at(-1)!
@@ -398,7 +526,7 @@ bot.on('message:photo', async (ctx) => {
 })
 
 bot.on('message:document', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('📄 Reading file...')
   try {
     const doc = ctx.message.document
@@ -413,7 +541,7 @@ bot.on('message:document', async (ctx) => {
 })
 
 bot.on('message:text', async (ctx) => {
-  if (!isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const userId = ctx.from?.id!
   const text = ctx.message.text
 
@@ -452,6 +580,8 @@ bot.on('message:text', async (ctx) => {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Error: ${String(err)}`)
   }
 })
+
+// ─── Inline Query ─────────────────────────────────────────────────────────────
 
 bot.on('inline_query', async (ctx) => {
   const query = ctx.inlineQuery.query.trim()
