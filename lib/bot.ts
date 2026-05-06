@@ -186,6 +186,9 @@ bot.command('start', async (ctx) => {
     `• /explain <topic> — explain anything simply\n` +
     `• /roast <topic> — roast anything 🔥\n` +
     `• /quote — motivational quote\n` +
+    `• /joke — random joke\n` +
+    `• /dark — dark humor\n` +
+    `• /dad — dad joke\n` +
     `• /model — switch AI provider\n` +
     `• /persona — switch AI personality\n` +
     `• /continue — continue last response\n` +
@@ -442,6 +445,42 @@ bot.command('model', async (ctx) => {
     pollinations: '🌸 Pollinations (no key needed)'
   }
   ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' })
+})
+
+
+// ─── Humor Commands ────────────────────────────────────────────────────────
+
+bot.command('joke', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('😄 Generating joke...')
+  try {
+    const result = await chat('Tell me a random funny joke. Be witty and creative.', [], ctx.from?.id)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😄 ${result}`)
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('dark', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('🌑 Generating dark humor...')
+  try {
+    const result = await chat('Tell me a random dark humor joke. Keep it clever and satirical.', [], ctx.from?.id)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌑 ${result}`)
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('dad', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('👨 Generating dad joke...')
+  try {
+    const result = await chat('Tell me a random dad joke. Make it gloriously terrible and punny.', [], ctx.from?.id)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `👨 ${result}`)
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
 })
 
 // ─── Image Commands ────────────────────────────────────────────────────────
