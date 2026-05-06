@@ -227,6 +227,7 @@ bot.command('model', async (ctx) => {
       `• /model auto — smart fallback (Groq → OpenRouter → Pollinations)\n` +
       `• /model groq — force Groq only\n` +
       `• /model openrouter — pick from ${models.length} free models\n` +
+      `  _e.g. /model openrouter → list appears → reply "5" to select_\n` +
       `• /model pollinations — force Pollinations only`,
       { parse_mode: 'Markdown' }
     )
