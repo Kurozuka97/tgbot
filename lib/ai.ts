@@ -3,13 +3,69 @@
 
 import { db } from './firebase'
 
-const SYSTEM_PROMPT = `You are a helpful multipurpose AI assistant in Telegram.
+const DEFAULT_SYSTEM_PROMPT = `You are a helpful multipurpose AI assistant in Telegram.
 Be concise, friendly, and useful. Support markdown formatting.
 For images and files, analyze thoroughly and describe what you see.`
+
+const PERSONAS: Record<string, string> = {
+  default: DEFAULT_SYSTEM_PROMPT,
+  sarcastic: `You are a sarcastic AI assistant in Telegram. You answer everything with dry wit and sarcasm, but still provide correct and helpful information. Be concise.`,
+  formal: `You are a formal and professional AI assistant in Telegram. Use proper language, structured responses, and avoid slang. Be thorough but concise.`,
+  waifu: `You are an anime girl AI assistant in Telegram. You are sweet, enthusiastic, and use light anime speech patterns (e.g. "nee~", "desu", "senpai"). Still be helpful and accurate. Be concise.`,
+  pirate: `You are a pirate AI assistant in Telegram. Speak like a pirate (arr, matey, etc) but still give correct and helpful answers. Be concise.`,
+  eli5: `You are an AI assistant in Telegram that explains everything like the user is 5 years old. Use simple words, analogies, and examples. Be concise.`,
+  sigma: `You are a sigma grindset AI assistant in Telegram. Everything is about the hustle, discipline, and mindset. Answer questions through the lens of self-improvement and stoicism. Be concise.`,
+}
+
+export const PERSONA_LIST = Object.keys(PERSONAS)
+
+const MAX_HISTORY = 20
 
 interface Message {
   role: 'system' | 'user' | 'assistant'
   content: any
+}
+
+// ─── History & Persona (Firestore) ───────────────────────────────────────────
+export async function getHistory(userId: number): Promise<Message[]> {
+  try {
+    const doc = await db.collection('tgbot_history').doc(String(userId)).get()
+    if (!doc.exists) return []
+    return doc.data()?.messages ?? []
+  } catch { return [] }
+}
+
+export async function appendHistory(userId: number, role: 'user' | 'assistant', content: string): Promise<void> {
+  try {
+    const ref = db.collection('tgbot_history').doc(String(userId))
+    const doc = await ref.get()
+    const messages: Message[] = doc.exists ? (doc.data()?.messages ?? []) : []
+    messages.push({ role, content })
+    const trimmed = messages.slice(-MAX_HISTORY)
+    await ref.set({ messages: trimmed }, { merge: true })
+  } catch {}
+}
+
+export async function clearHistory(userId: number): Promise<void> {
+  try {
+    await db.collection('tgbot_history').doc(String(userId)).set({ messages: [] })
+  } catch {}
+}
+
+export async function getPersona(userId: number): Promise<string> {
+  try {
+    const doc = await db.collection('tgbot_prefs').doc(String(userId)).get()
+    if (!doc.exists) return 'default'
+    return doc.data()?.persona ?? 'default'
+  } catch { return 'default' }
+}
+
+export async function setPersona(userId: number, persona: string): Promise<void> {
+  await db.collection('tgbot_prefs').doc(String(userId)).set({ persona }, { merge: true })
+}
+
+export function getSystemPrompt(persona: string): string {
+  return PERSONAS[persona] ?? DEFAULT_SYSTEM_PROMPT
 }
 
 // ─── Groq ────────────────────────────────────────────────────────────────────
@@ -31,7 +87,7 @@ async function groqChat(messages: Message[]): Promise<string> {
   return data.choices[0].message.content
 }
 
-async function groqVision(prompt: string, imageData: string, mimeType: string): Promise<string> {
+async function groqVision(prompt: string, imageData: string, mimeType: string, systemPrompt: string): Promise<string> {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -39,9 +95,9 @@ async function groqVision(prompt: string, imageData: string, mimeType: string): 
       'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
     },
     body: JSON.stringify({
-      model: 'llama-3.2-11b-vision-preview',
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         {
           role: 'user',
           content: [
@@ -73,7 +129,7 @@ async function mistralChat(messages: Message[], model = 'mistral-small-latest'):
   return data.choices[0].message.content
 }
 
-async function mistralVision(prompt: string, imageData: string, mimeType: string): Promise<string> {
+async function mistralVision(prompt: string, imageData: string, mimeType: string, systemPrompt: string): Promise<string> {
   const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -83,7 +139,7 @@ async function mistralVision(prompt: string, imageData: string, mimeType: string
     body: JSON.stringify({
       model: 'pixtral-large-latest',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         {
           role: 'user',
           content: [
@@ -134,7 +190,6 @@ async function fetchFreeModels(): Promise<string[]> {
     .map((m: any) => m.id)
 
   lastFetched = now
-  console.log(`Loaded ${freeModels.length} free OpenRouter models`)
   return freeModels
 }
 
@@ -187,7 +242,7 @@ export async function setUserProvider(userId: number, provider: string, model?: 
   const data: any = { provider }
   if (model) data.model = model
   else data.model = null
-  await db.collection('tgbot_prefs').doc(String(userId)).set(data)
+  await db.collection('tgbot_prefs').doc(String(userId)).set(data, { merge: true })
 }
 
 export async function getFreeModelList(): Promise<string[]> {
@@ -198,15 +253,21 @@ export async function getFreeModelList(): Promise<string[]> {
 export async function chat(
   prompt: string,
   imageParts: { data: string; mimeType: string }[] = [],
-  userId?: number
+  userId?: number,
+  history: Message[] = []
 ): Promise<string> {
   const pref = userId ? await getUserProvider(userId) : { provider: 'auto' }
   const { provider, model: specificModel } = pref
+  const persona = userId ? await getPersona(userId) : 'default'
+  const systemPrompt = getSystemPrompt(persona)
 
   // Vision request
   if (imageParts.length > 0) {
+    try { return await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt) } catch {}
+    try { return await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt) } catch {}
     const visionMessages: Message[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
+      ...history,
       {
         role: 'user',
         content: [
@@ -215,18 +276,16 @@ export async function chat(
         ]
       }
     ]
-    try { return await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType) } catch {}
-    try { return await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType) } catch {}
     try { return await openrouterChat(visionMessages) } catch {}
     return '❌ Image analysis unavailable right now.'
   }
 
   const messages: Message[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemPrompt },
+    ...history,
     { role: 'user', content: prompt }
   ]
 
-  // User-selected provider
   if (provider === 'groq') {
     try { return await groqChat(messages) } catch {}
     return '❌ Groq unavailable. Try /model auto to use fallback.'
@@ -245,7 +304,7 @@ export async function chat(
     return '❌ Pollinations unavailable. Try /model auto to use fallback.'
   }
 
-  // Auto fallback chain: Groq → Mistral → OpenRouter → Pollinations
+  // Auto fallback chain
   try { return await groqChat(messages) } catch {}
   try { return await mistralChat(messages) } catch {}
   try { return await openrouterChat(messages) } catch {}
