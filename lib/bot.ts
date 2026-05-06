@@ -1,5 +1,10 @@
 import { Telegraf, Context } from 'telegraf'
-import { chat, chatWithSearch, fileToGenerativePart, getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS } from './ai'
+import {
+  chat, chatWithSearch, fileToGenerativePart,
+  getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS,
+  getHistory, appendHistory, clearHistory,
+  getPersona, setPersona, getSystemPrompt, PERSONA_LIST
+} from './ai'
 
 const bot = new Telegraf(process.env.BOT_TOKEN!)
 
@@ -12,7 +17,6 @@ function isAllowed(ctx: Context) {
   return ALLOWED_USERS.includes(ctx.from?.id ?? 0)
 }
 
-// Track users waiting to pick a model
 const pendingModelSelection = new Map<number, string[]>()
 const pendingMistralSelection = new Map<number, boolean>()
 
@@ -63,7 +67,9 @@ bot.start((ctx) => {
     `• /roast <topic> — roast anything 🔥\n` +
     `• /quote — motivational quote\n` +
     `• /model — switch AI provider\n` +
-    
+    `• /persona — switch AI personality\n` +
+    `• /continue — continue last response\n` +
+    `• /clear — clear conversation memory\n\n` +
     `*Image Commands:*\n` +
     `• /imagine <prompt> — generate an image\n` +
     `• /sticker <prompt> — generate a sticker\n\n` +
@@ -91,7 +97,9 @@ bot.help((ctx) => {
     `/roast <topic> — roast anything 🔥\n` +
     `/quote — motivational quote\n` +
     `/model — switch AI provider\n` +
-    
+    `/persona — switch AI personality\n` +
+    `/continue — continue last response\n` +
+    `/clear — clear conversation memory\n\n` +
     `*Image:*\n` +
     `/imagine <prompt> — generate image\n` +
     `/sticker <prompt> — generate sticker\n\n` +
@@ -212,6 +220,50 @@ bot.command('quote', async (ctx) => {
   }
 })
 
+bot.command('persona', async (ctx) => {
+  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  const arg = ctx.message.text.replace(/^\/persona(@\w+)?\s*/, '').trim().toLowerCase()
+  const userId = ctx.from?.id!
+
+  if (!arg) {
+    const current = await getPersona(userId)
+    const list = PERSONA_LIST.map(p => `• \`${p}\``).join('\n')
+    return ctx.reply(
+      `🎭 *Persona Settings*\n\nCurrent: \`${current}\`\n\n*Available:*\n${list}\n\nUsage: /persona <name>`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+
+  if (!PERSONA_LIST.includes(arg)) {
+    return ctx.reply(`❌ Unknown persona. Available: ${PERSONA_LIST.map(p => `\`${p}\``).join(', ')}`, { parse_mode: 'Markdown' })
+  }
+
+  await setPersona(userId, arg)
+  ctx.reply(`🎭 Persona set to *${arg}*`, { parse_mode: 'Markdown' })
+})
+
+bot.command('continue', async (ctx) => {
+  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  const userId = ctx.from?.id!
+  const history = await getHistory(userId)
+  if (history.length === 0) return ctx.reply('💭 No conversation history to continue.')
+  const msg = await ctx.reply('💭 Continuing...')
+  try {
+    const result = await chat('Continue from where you left off.', [], userId, history)
+    await appendHistory(userId, 'user', 'Continue from where you left off.')
+    await appendHistory(userId, 'assistant', result)
+    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('clear', async (ctx) => {
+  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
+  await clearHistory(ctx.from?.id!)
+  ctx.reply('🗑️ Conversation memory cleared.')
+})
+
 bot.command('model', async (ctx) => {
   if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
   const arg = ctx.message.text.replace(/^\/model(@\w+)?\s*/, '').trim().toLowerCase()
@@ -222,41 +274,33 @@ bot.command('model', async (ctx) => {
     const current = pref.model
       ? `${pref.provider} → \`${pref.model}\``
       : `\`${pref.provider}\``
-    const orModels = await getFreeModelList()
     return ctx.reply(
-      `🤖 *AI Provider Settings*\n\n` +
-      `Current: ${current}\n\n` +
-      `*Options:*\n` +
+      `🤖 *AI Provider Settings*\n\nCurrent: ${current}\n\n*Options:*\n` +
       `• /model auto — smart fallback (Groq → Mistral → OpenRouter → Pollinations)\n` +
       `• /model groq — force Groq only\n` +
       `• /model mistral — pick from list of models\n` +
       `• /model openrouter — pick from list of free models\n` +
-      `  _e.g. /model openrouter → list appears → reply "5" to select_\n` +
       `• /model pollinations — force Pollinations only`,
       { parse_mode: 'Markdown' }
     )
   }
 
-  // Mistral model selection
   if (arg === 'mistral') {
     const modelList = Object.keys(MISTRAL_MODELS)
     pendingMistralSelection.set(userId, true)
     const list = modelList.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
-      `🇫🇷 *Mistral Models:*\n\n${list}\n\n` +
-      `Reply with the *number* to select.\nType /model auto to cancel.`,
+      `🇫🇷 *Mistral Models:*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
       { parse_mode: 'Markdown' }
     )
   }
 
-  // OpenRouter model selection
   if (arg === 'openrouter') {
     const models = await getFreeModelList()
     pendingModelSelection.set(userId, models)
     const list = models.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
-      `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}\n\n` +
-      `Reply with the *number* to select.\nType /model auto to cancel.`,
+      `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
       { parse_mode: 'Markdown' }
     )
   }
@@ -372,7 +416,6 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from?.id!
   const text = ctx.message.text
 
-  // Mistral model selection pending
   if (pendingMistralSelection.has(userId)) {
     const modelList = Object.keys(MISTRAL_MODELS)
     const num = parseInt(text.trim())
@@ -388,7 +431,6 @@ bot.on('text', async (ctx) => {
     )
   }
 
-  // OpenRouter model selection pending
   if (pendingModelSelection.has(userId)) {
     const models = pendingModelSelection.get(userId)!
     const num = parseInt(text.trim())
@@ -404,10 +446,13 @@ bot.on('text', async (ctx) => {
     )
   }
 
-  // Normal AI chat
+  // Normal AI chat with history
   const msg = await ctx.reply('💭 Thinking...')
   try {
-    const result = await chat(text, [], userId)
+    const history = await getHistory(userId)
+    const result = await chat(text, [], userId, history)
+    await appendHistory(userId, 'user', text)
+    await appendHistory(userId, 'assistant', result)
     await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Error: ${String(err)}`)
