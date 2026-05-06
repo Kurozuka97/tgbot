@@ -1,5 +1,5 @@
 import { Telegraf, Context } from 'telegraf'
-import { chat, chatWithSearch, fileToGenerativePart, getUserProvider, setUserProvider, getFreeModelList } from './ai'
+import { chat, chatWithSearch, fileToGenerativePart, getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS } from './ai'
 
 const bot = new Telegraf(process.env.BOT_TOKEN!)
 
@@ -12,8 +12,9 @@ function isAllowed(ctx: Context) {
   return ALLOWED_USERS.includes(ctx.from?.id ?? 0)
 }
 
-// Track users waiting to pick a model: userId → model list
+// Track users waiting to pick a model
 const pendingModelSelection = new Map<number, string[]>()
+const pendingMistralSelection = new Map<number, boolean>()
 
 async function fetchFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string }> {
   const file = await bot.telegram.getFile(fileId)
@@ -218,21 +219,37 @@ bot.command('model', async (ctx) => {
 
   if (!arg) {
     const pref = await getUserProvider(userId)
-    const current = pref.model ? `openrouter → \`${pref.model}\`` : `\`${pref.provider}\``
-    const models = await getFreeModelList()
+    const current = pref.model
+      ? `${pref.provider} → \`${pref.model}\``
+      : `\`${pref.provider}\``
+    const orModels = await getFreeModelList()
     return ctx.reply(
       `🤖 *AI Provider Settings*\n\n` +
       `Current: ${current}\n\n` +
       `*Options:*\n` +
-      `• /model auto — smart fallback (Groq → OpenRouter → Pollinations)\n` +
+      `• /model auto — smart fallback (Groq → Mistral → OpenRouter → Pollinations)\n` +
       `• /model groq — force Groq only\n` +
-      `• /model openrouter — pick from ${models.length} free models\n` +
+      `• /model mistral — Mistral AI (pick model)\n` +
+      `• /model openrouter — pick from ${orModels.length} free models\n` +
       `  _e.g. /model openrouter → list appears → reply "5" to select_\n` +
       `• /model pollinations — force Pollinations only`,
       { parse_mode: 'Markdown' }
     )
   }
 
+  // Mistral model selection
+  if (arg === 'mistral') {
+    const modelList = Object.keys(MISTRAL_MODELS)
+    pendingMistralSelection.set(userId, true)
+    const list = modelList.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
+    return ctx.reply(
+      `🇫🇷 *Mistral Models:*\n\n${list}\n\n` +
+      `Reply with the *number* to select.\nType /model auto to cancel.`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+
+  // OpenRouter model selection
   if (arg === 'openrouter') {
     const models = await getFreeModelList()
     pendingModelSelection.set(userId, models)
@@ -246,10 +263,11 @@ bot.command('model', async (ctx) => {
 
   const valid = ['auto', 'groq', 'pollinations']
   if (!valid.includes(arg)) {
-    return ctx.reply(`❌ Invalid option. Choose: auto, groq, openrouter, pollinations`)
+    return ctx.reply(`❌ Invalid option. Choose: auto, groq, mistral, openrouter, pollinations`)
   }
 
   pendingModelSelection.delete(userId)
+  pendingMistralSelection.delete(userId)
   await setUserProvider(userId, arg)
   const labels: Record<string, string> = {
     auto: '🔄 Auto fallback (recommended)',
@@ -376,7 +394,23 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from?.id!
   const text = ctx.message.text
 
-  // Check if user is in model selection mode
+  // Mistral model selection pending
+  if (pendingMistralSelection.has(userId)) {
+    const modelList = Object.keys(MISTRAL_MODELS)
+    const num = parseInt(text.trim())
+    if (isNaN(num) || num < 1 || num > modelList.length) {
+      return ctx.reply(`❌ Invalid. Pick 1–${modelList.length}, or /model auto to cancel.`)
+    }
+    const selected = modelList[num - 1]
+    pendingMistralSelection.delete(userId)
+    await setUserProvider(userId, 'mistral', selected)
+    return ctx.reply(
+      `✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+
+  // OpenRouter model selection pending
   if (pendingModelSelection.has(userId)) {
     const models = pendingModelSelection.get(userId)!
     const num = parseInt(text.trim())
