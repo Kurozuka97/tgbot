@@ -81,6 +81,9 @@ bot.command('start', (ctx) => {
     `• Send any text → AI chat\n` +
     `• Send image → analyze\n` +
     `• Send file → read & summarize\n\n` +
+    `*Inline Mode:*\n` +
+    `• @botname <query> — AI anywhere\n` +
+    `• @botname imagine <prompt> — generate image anywhere\n\n` +
     `Type /help to see this again!`,
     { parse_mode: 'Markdown' }
   )
@@ -107,6 +110,9 @@ bot.command('help', (ctx) => {
     `*Utility:*\n` +
     `/qr <text> — generate QR code\n` +
     `/calc <expression> — calculator\n\n` +
+    `*Inline:*\n` +
+    `@botname <query> — AI anywhere\n` +
+    `@botname imagine <prompt> — image anywhere\n\n` +
     `/help — show this menu`,
     { parse_mode: 'Markdown' }
   )
@@ -444,6 +450,52 @@ bot.on('message:text', async (ctx) => {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Error: ${String(err)}`)
+  }
+})
+
+bot.on('inline_query', async (ctx) => {
+  const query = ctx.inlineQuery.query.trim()
+  if (!query) {
+    return ctx.answerInlineQuery([{
+      type: 'article',
+      id: '0',
+      title: 'Ask me anything!',
+      input_message_content: { message_text: '💬 Type something after @botname' },
+      description: 'e.g. @botname explain black holes'
+    }])
+  }
+
+  const isImage = query.startsWith('imagine ') || query.startsWith('img ')
+  const prompt = isImage ? query.split(' ').slice(1).join(' ') : query
+
+  try {
+    if (isImage) {
+      const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`
+      return ctx.answerInlineQuery([{
+        type: 'photo',
+        id: '1',
+        photo_url: url,
+        thumbnail_url: url,
+        caption: `🎨 ${prompt}`
+      }], { cache_time: 0 })
+    }
+
+    const result = await chat(prompt, [], ctx.from.id)
+    return ctx.answerInlineQuery([{
+      type: 'article',
+      id: '1',
+      title: query.slice(0, 60),
+      input_message_content: { message_text: result, parse_mode: 'Markdown' },
+      description: result.slice(0, 100)
+    }], { cache_time: 0 })
+  } catch {
+    return ctx.answerInlineQuery([{
+      type: 'article',
+      id: 'err',
+      title: '❌ Error',
+      input_message_content: { message_text: '❌ Failed to process query.' },
+      description: 'Try again'
+    }])
   }
 })
 
