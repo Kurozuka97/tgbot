@@ -10,7 +10,7 @@
   "dependencies": {
     "firebase-admin": "*",
     "grammy": "*",
-    "next": "*",
+    "next": "^14",
     "react": "*",
     "react-dom": "*"
   },
