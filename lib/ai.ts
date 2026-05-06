@@ -1,5 +1,5 @@
 // Multi-AI provider with automatic fallback
-// Priority: Groq → OpenRouter (rotate all free models) → Pollinations (text)
+// Priority: Groq → Mistral → OpenRouter (rotate free models) → Pollinations
 
 import { db } from './firebase'
 
@@ -56,6 +56,59 @@ async function groqVision(prompt: string, imageData: string, mimeType: string): 
   if (!res.ok) throw new Error(`Groq Vision: ${res.status}`)
   const data = await res.json()
   return data.choices[0].message.content
+}
+
+// ─── Mistral ──────────────────────────────────────────────────────────────────
+async function mistralChat(messages: Message[], model = 'mistral-small-latest'): Promise<string> {
+  const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`
+    },
+    body: JSON.stringify({ model, messages, max_tokens: 1024 })
+  })
+  if (!res.ok) throw new Error(`Mistral: ${res.status}`)
+  const data = await res.json()
+  return data.choices[0].message.content
+}
+
+async function mistralVision(prompt: string, imageData: string, mimeType: string): Promise<string> {
+  const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: 'pixtral-large-latest',
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageData}` } },
+            { type: 'text', text: prompt }
+          ]
+        }
+      ],
+      max_tokens: 1024
+    })
+  })
+  if (!res.ok) throw new Error(`Mistral Vision: ${res.status}`)
+  const data = await res.json()
+  return data.choices[0].message.content
+}
+
+export const MISTRAL_MODELS: Record<string, string> = {
+  'mistral-small': 'mistral-small-latest',
+  'mistral-large': 'mistral-large-latest',
+  'mistral-medium': 'mistral-medium-latest',
+  'codestral': 'codestral-latest',
+  'devstral': 'devstral-latest',
+  'pixtral': 'pixtral-large-latest',
+  'magistral-small': 'magistral-small-latest',
+  'magistral-medium': 'magistral-medium-latest',
 }
 
 // ─── OpenRouter (auto-fetch & rotate all free models) ────────────────────────
@@ -163,6 +216,7 @@ export async function chat(
       }
     ]
     try { return await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType) } catch {}
+    try { return await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType) } catch {}
     try { return await openrouterChat(visionMessages) } catch {}
     return '❌ Image analysis unavailable right now.'
   }
@@ -177,6 +231,11 @@ export async function chat(
     try { return await groqChat(messages) } catch {}
     return '❌ Groq unavailable. Try /model auto to use fallback.'
   }
+  if (provider === 'mistral') {
+    const mistralModel = specificModel ? MISTRAL_MODELS[specificModel] ?? specificModel : 'mistral-small-latest'
+    try { return await mistralChat(messages, mistralModel) } catch {}
+    return '❌ Mistral unavailable. Try /model auto to use fallback.'
+  }
   if (provider === 'openrouter') {
     try { return await openrouterChat(messages, specificModel) } catch {}
     return '❌ OpenRouter unavailable. Try /model auto to use fallback.'
@@ -186,8 +245,9 @@ export async function chat(
     return '❌ Pollinations unavailable. Try /model auto to use fallback.'
   }
 
-  // Auto fallback chain
+  // Auto fallback chain: Groq → Mistral → OpenRouter → Pollinations
   try { return await groqChat(messages) } catch {}
+  try { return await mistralChat(messages) } catch {}
   try { return await openrouterChat(messages) } catch {}
   try { return await pollinationsChat(prompt) } catch {}
   return '❌ All AI providers unavailable. Try again later.'
