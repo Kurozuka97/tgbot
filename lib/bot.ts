@@ -63,7 +63,7 @@ bot.start((ctx) => {
     `• /roast <topic> — roast anything 🔥\n` +
     `• /quote — motivational quote\n` +
     `• /model — switch AI provider\n` +
-    `• /models — list all free OpenRouter models\n\n` +
+    
     `*Image Commands:*\n` +
     `• /imagine <prompt> — generate an image\n` +
     `• /sticker <prompt> — generate a sticker\n\n` +
@@ -91,7 +91,7 @@ bot.help((ctx) => {
     `/roast <topic> — roast anything 🔥\n` +
     `/quote — motivational quote\n` +
     `/model — switch AI provider\n` +
-    `/models — list all free OpenRouter models\n\n` +
+    
     `*Image:*\n` +
     `/imagine <prompt> — generate image\n` +
     `/sticker <prompt> — generate sticker\n\n` +
@@ -229,8 +229,8 @@ bot.command('model', async (ctx) => {
       `*Options:*\n` +
       `• /model auto — smart fallback (Groq → Mistral → OpenRouter → Pollinations)\n` +
       `• /model groq — force Groq only\n` +
-      `• /model mistral — Mistral AI (pick model)\n` +
-      `• /model openrouter — pick from ${orModels.length} free models\n` +
+      `• /model mistral — pick from list of models\n` +
+      `• /model openrouter — pick from list of free models\n` +
       `  _e.g. /model openrouter → list appears → reply "5" to select_\n` +
       `• /model pollinations — force Pollinations only`,
       { parse_mode: 'Markdown' }
@@ -275,22 +275,6 @@ bot.command('model', async (ctx) => {
     pollinations: '🌸 Pollinations (no key needed)'
   }
   ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' })
-})
-
-bot.command('models', async (ctx) => {
-  if (!isAllowed(ctx)) return ctx.reply('⛔ Unauthorized.')
-  const msg = await ctx.reply('⏳ Fetching models...')
-  try {
-    const models = await getFreeModelList()
-    const list = models.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
-    await ctx.telegram.editMessageText(
-      ctx.chat.id, msg.message_id, undefined,
-      `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}`,
-      { parse_mode: 'Markdown' }
-    )
-  } catch (err) {
-    await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ Failed: ${String(err)}`)
-  }
 })
 
 bot.command('imagine', async (ctx) => {
