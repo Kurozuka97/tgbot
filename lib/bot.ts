@@ -407,7 +407,7 @@ bot.command('logs', async (ctx) => {
 bot.command('help', (ctx) => {
   const userId = ctx.from?.id ?? 0
   const adminSection = isAdmin(userId)
-    ? `\n*👑 Admin:*\n` +
+    ? `\n\n*👑 Admin:*\n` +
       `/admin — pending requests\n` +
       `/users — list approved users\n` +
       `/allow <id> — approve user\n` +
