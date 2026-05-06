@@ -247,7 +247,7 @@ bot.command('search', async (ctx) => {
   const msg = await ctx.reply('🔍 Searching...')
   try {
     const result = await chatWithSearch(query, ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Search failed: ${String(err)}`)
   }
@@ -260,7 +260,7 @@ bot.command('weather', async (ctx) => {
   const msg = await ctx.reply('🌤️ Checking weather...')
   try {
     const result = await chat(`What is the typical/current weather in ${city}? Provide temperature range (Celsius), humidity, wind, and general conditions. Format nicely with emojis. Note if data may not be real-time.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -290,7 +290,7 @@ bot.command('translate', async (ctx) => {
   const msg = await ctx.reply('🌐 Translating...')
   try {
     const result = await chat(`Translate the following text to ${targetLang}. Reply with only the translation, nothing else:\n\n${text}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 *${targetLang}:*\n${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 ${targetLang}:\n${result}`)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -304,7 +304,7 @@ bot.command('summarize', async (ctx) => {
   try {
     const content = await fetchUrl(url)
     const result = await chat(`Summarize the following content in clear bullet points. Be concise:\n\n${content}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 *Summary:*\n${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 Summary:\n${result}`)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -317,7 +317,7 @@ bot.command('explain', async (ctx) => {
   const msg = await ctx.reply('🧠 Thinking...')
   try {
     const result = await chat(`Explain "${topic}" in simple terms that anyone can understand. Be concise and use examples.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -330,7 +330,7 @@ bot.command('roast', async (ctx) => {
   const msg = await ctx.reply('🔥 Roasting...')
   try {
     const result = await chat(`Give a funny, savage but lighthearted roast about: "${topic}". Keep it humorous, not mean-spirited. 3-5 sentences.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -341,7 +341,7 @@ bot.command('quote', async (ctx) => {
   const msg = await ctx.reply('✨ Generating quote...')
   try {
     const result = await chat('Generate one unique, powerful motivational quote. Format: "quote" — Author (or "Unknown"). Just the quote, nothing else.', [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `✨ ${result}`, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `✨ ${result}`)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -379,7 +379,7 @@ bot.command('continue', async (ctx) => {
     const result = await chat('Continue from where you left off.', [], userId, history)
     await appendHistory(userId, 'user', 'Continue from where you left off.')
     await appendHistory(userId, 'assistant', result)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -519,7 +519,7 @@ bot.on('message:photo', async (ctx) => {
     const part = fileToGenerativePart(buffer, mimeType)
     const caption = ctx.message.caption ?? 'Describe this image in detail.'
     const result = await chat(caption, [part], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -534,7 +534,7 @@ bot.on('message:document', async (ctx) => {
     const part = fileToGenerativePart(buffer, mimeType)
     const caption = ctx.message.caption ?? 'Summarize the contents of this file.'
     const result = await chat(caption, [part], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -577,7 +577,7 @@ bot.on('message:text', async (ctx) => {
     const result = await chat(text, [], userId, history)
     await appendHistory(userId, 'user', text)
     await appendHistory(userId, 'assistant', result)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Error: ${String(err)}`)
   }
@@ -617,7 +617,7 @@ bot.on('inline_query', async (ctx) => {
       type: 'article',
       id: '1',
       title: query.slice(0, 60),
-      input_message_content: { message_text: result, parse_mode: 'Markdown' },
+      input_message_content: { message_text: result },
       description: result.slice(0, 100)
     }], { cache_time: 0 })
   } catch {
