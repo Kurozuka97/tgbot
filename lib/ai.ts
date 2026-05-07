@@ -58,6 +58,7 @@ export async function getPersona(userId: number): Promise<string> {
 
 export async function setPersona(userId: number, persona: string): Promise<void> {
   await db.collection('tgbot_prefs').doc(String(userId)).set({ persona }, { merge: true })
+  await clearHistory(userId)
 }
 
 export function getSystemPrompt(persona: string): string {
