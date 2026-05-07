@@ -26,6 +26,7 @@ function isAdmin(userId: number) {
 
 async function isAllowed(userId: number): Promise<boolean> {
   if (isAdmin(userId)) return true
+  if (await isUserBanned(userId)) return false
   return isUserAllowed(userId)
 }
 
