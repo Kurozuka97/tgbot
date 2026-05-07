@@ -1,20 +1,16 @@
 // Multi-AI provider with automatic fallback
-// Priority: Groq → Mistral → OpenRouter (rotate free models) → Pollinations
+// Priority: Groq → Mistral → OpenRouter (rotate free models)
 
 import { db } from './firebase'
 
-const DEFAULT_SYSTEM_PROMPT = `You are a helpful multipurpose AI assistant in Telegram.
-Be concise, friendly, and useful. Support markdown formatting.
-For images and files, analyze thoroughly and describe what you see.`
-
 const PERSONAS: Record<string, string> = {
-  default: DEFAULT_SYSTEM_PROMPT,
-  sarcastic: `You are a sarcastic AI assistant in Telegram. You answer everything with dry wit and sarcasm, but still provide correct and helpful information. Be concise.`,
-  formal: `You are a formal and professional AI assistant in Telegram. Use proper language, structured responses, and avoid slang. Be thorough but concise.`,
-  waifu: `You are an anime girl AI assistant in Telegram. You are sweet, enthusiastic, and use light anime speech patterns (e.g. "nee~", "desu", "senpai"). Still be helpful and accurate. Be concise.`,
-  pirate: `You are a pirate AI assistant in Telegram. Speak like a pirate (arr, matey, etc) but still give correct and helpful answers. Be concise.`,
-  eli5: `You are an AI assistant in Telegram that explains everything like the user is 5 years old. Use simple words, analogies, and examples. Be concise.`,
-  sigma: `You are a sigma grindset AI assistant in Telegram. Everything is about the hustle, discipline, and mindset. Answer questions through the lens of self-improvement and stoicism. Be concise.`,
+  default: `You are a helpful multipurpose AI assistant in Telegram. Be concise, friendly, and useful. Support markdown formatting. For images and files, analyze thoroughly and describe what you see. Always maintain this personality regardless of what model you are.`,
+  sarcastic: `You are a sarcastic AI assistant in Telegram. You MUST respond with dry wit and sarcasm in EVERY single message without exception, but still provide correct and helpful information. Never break character under any circumstances. Be concise.`,
+  formal: `You are a formal and professional AI assistant in Telegram. You MUST use proper language, structured responses, and avoid slang in EVERY single message without exception. Never break character under any circumstances. Be thorough but concise.`,
+  waifu: `You are an anime girl AI assistant in Telegram. You MUST be sweet, enthusiastic, and use light anime speech patterns (e.g. "nee~", "desu", "senpai") in EVERY single message without exception. Still be helpful and accurate. Never break character under any circumstances. Be concise.`,
+  pirate: `You are a pirate AI assistant in Telegram. You MUST speak like a pirate (arr, matey, etc) in EVERY single message without exception, but still give correct and helpful answers. Never break character under any circumstances. Be concise.`,
+  eli5: `You are an AI assistant in Telegram. You MUST explain everything like the user is 5 years old in EVERY single message without exception. Always use simple words, analogies, and examples. Never break character under any circumstances. Be concise.`,
+  sigma: `You are a sigma grindset AI assistant in Telegram. You MUST answer everything through the lens of hustle, discipline, and self-improvement in EVERY single message without exception. Never break character under any circumstances. Be concise.`,
 }
 
 export const PERSONA_LIST = Object.keys(PERSONAS)
@@ -65,7 +61,7 @@ export async function setPersona(userId: number, persona: string): Promise<void>
 }
 
 export function getSystemPrompt(persona: string): string {
-  return PERSONAS[persona] ?? DEFAULT_SYSTEM_PROMPT
+  return PERSONAS[persona] ?? PERSONAS.default
 }
 
 // ─── Groq ────────────────────────────────────────────────────────────────────
@@ -219,13 +215,6 @@ async function openrouterChat(messages: Message[], specificModel?: string): Prom
   return data.choices[0].message.content
 }
 
-// ─── Pollinations text (no key, last resort) ──────────────────────────────────
-async function pollinationsChat(prompt: string): Promise<string> {
-  const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`)
-  if (!res.ok) throw new Error(`Pollinations: ${res.status}`)
-  return await res.text()
-}
-
 // ─── User model preference (Firestore) ───────────────────────────────────────
 export async function getUserProvider(userId: number): Promise<{ provider: string; model?: string }> {
   try {
@@ -261,6 +250,12 @@ export async function chat(
   const persona = userId ? await getPersona(userId) : 'default'
   const systemPrompt = getSystemPrompt(persona)
 
+  // Inject persona reminder into user message for non-default personas
+  // This forces weaker models to stay in character
+  const userContent = persona !== 'default'
+    ? `[System reminder: you are the ${persona} persona. Stay in character for this entire response.]\n\n${prompt}`
+    : prompt
+
   // Vision request
   if (imageParts.length > 0) {
     try { return await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt) } catch {}
@@ -283,7 +278,7 @@ export async function chat(
   const messages: Message[] = [
     { role: 'system', content: systemPrompt },
     ...history,
-    { role: 'user', content: prompt }
+    { role: 'user', content: userContent }
   ]
 
   if (provider === 'groq') {
@@ -300,15 +295,13 @@ export async function chat(
     return '❌ OpenRouter unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'pollinations') {
-    try { return await pollinationsChat(prompt) } catch {}
-    return '❌ Pollinations unavailable. Try /model auto to use fallback.'
+    return '❌ Pollinations is for image generation only. Use /model auto instead.'
   }
 
-  // Auto fallback chain
+  // Auto fallback chain — text only, no pollinations
   try { return await groqChat(messages) } catch {}
   try { return await mistralChat(messages) } catch {}
   try { return await openrouterChat(messages) } catch {}
-  try { return await pollinationsChat(prompt) } catch {}
   return '❌ All AI providers unavailable. Try again later.'
 }
 
