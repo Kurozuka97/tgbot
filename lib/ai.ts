@@ -233,9 +233,7 @@ async function openrouterChat(messages: Message[], specificModel?: string): Prom
 // strips tool call leakage, preserves content and personality
 
 async function sanitizeWithAI(text: string): Promise<string> {
-  // Quick pre-check — if no Markdown chars present, skip the extra call
-  if (!/[*_`\[<]/.test(text)) return text
-
+  // Quick pre-check — if no special chars present, still need to escape for MarkdownV2
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -249,16 +247,20 @@ async function sanitizeWithAI(text: string): Promise<string> {
         messages: [
           {
             role: 'system',
-            content: `You are a Telegram message formatter. Your ONLY job is to clean and fix text for Telegram's Markdown parser.
+            content: `You are a Telegram MarkdownV2 formatter. Convert the input text to valid Telegram MarkdownV2 format.
 
 Rules:
 - Remove any XML tool call tags like <tool_call>, <arg_key>, <longcat_tool_call> etc completely
-- Fix unclosed *bold*, _italic_, \`code\` formatting — either close them or remove the opening marker
-- Escape bare asterisks that are NOT bold formatting (e.g. math like 3 * 4) with a backslash: 3 \\* 4
-- Escape bare underscores that are NOT italic formatting (e.g. variable_name) with a backslash: variable\\_name
-- Escape bare square brackets [ that are NOT part of a [link](url) with a backslash: \\[
+- These special characters MUST be escaped with a backslash when used as literal text (not formatting): . ! - ( ) { } # + = | > ~ [ ] *  _  \` \\
+- Bold: *bold text* — only wrap intentional bold phrases
+- Italic: _italic text_ — only wrap intentional italic phrases
+- Code inline: \`code\`
+- Code block: \`\`\`code\`\`\`
+- For math or symbols like 3 * 4, escape the asterisk: 3 \\* 4
+- For variable_name underscores, escape them: variable\\_name
+- For sentence ending periods, exclamation marks, hyphens in plain text — escape them: like this\\. or this\\!
 - Preserve the original language, tone, personality and content exactly — do NOT rephrase or translate
-- Return ONLY the cleaned text, no explanations, no preamble`
+- Return ONLY the formatted text, no explanations, no preamble`
           },
           {
             role: 'user',
@@ -267,12 +269,19 @@ Rules:
         ]
       })
     })
-    if (!res.ok) return text
+    if (!res.ok) return escapeMarkdownV2(text)
     const data = await res.json()
-    return data.choices?.[0]?.message?.content ?? text
+    return data.choices?.[0]?.message?.content ?? escapeMarkdownV2(text)
   } catch {
-    return text
+    return escapeMarkdownV2(text)
   }
+}
+
+// Fallback: hard escape all MarkdownV2 special chars if AI sanitizer fails
+function escapeMarkdownV2(text: string): string {
+  return text
+    .replace(/</g, '&lt;')
+    .replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&')
 }
 
 // ─── User model preference (Firestore) ───────────────────────────────────────
