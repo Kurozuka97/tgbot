@@ -266,6 +266,9 @@ function sanitizeWithAI(text: string): Promise<string> {
 function sanitizeHTML(text: string): string {
   const allowed = new Set(['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler'])
 
+  // 0. Strip MarkdownV2 backslash escapes that models sometimes output (e.g. \. \! \- \#)
+  text = text.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, '$1')
+
   // 1. Convert Markdown code blocks FIRST (before other replacements)
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`)
 
