@@ -240,7 +240,45 @@ export async function trackUsage(userId: number): Promise<boolean> {
   return isFirstActive
 }
 
-// ─── Audit Log ────────────────────────────────────────────────────────────────
+// ─── Maintenance Mode ─────────────────────────────────────────────────────────
+
+export async function setMaintenance(enabled: boolean): Promise<void> {
+  await db.collection('config').doc('maintenance').set({ enabled })
+}
+
+export async function isMaintenance(): Promise<boolean> {
+  const doc = await db.collection('config').doc('maintenance').get()
+  return doc.exists ? (doc.data()?.enabled ?? false) : false
+}
+
+// ─── Stats ────────────────────────────────────────────────────────────────────
+
+export async function getStats(): Promise<{ totalUsers: number; totalMessages: number; topUsers: { tag: string; count: number }[] }> {
+  const users = await getApprovedUsers()
+  const totalUsers = users.length
+  const totalMessages = users.reduce((sum, u) => sum + (u.messageCount ?? 0), 0)
+  const topUsers = users
+    .sort((a, b) => (b.messageCount ?? 0) - (a.messageCount ?? 0))
+    .slice(0, 5)
+    .map(u => ({ tag: u.username ? `@${u.username}` : u.firstName ?? String(u.userId), count: u.messageCount ?? 0 }))
+  return { totalUsers, totalMessages, topUsers }
+}
+
+// ─── Mood Log ─────────────────────────────────────────────────────────────────
+
+export async function logMood(userId: number, mood: string): Promise<void> {
+  await db.collection('mood_log').add({ userId, mood, timestamp: Date.now() })
+}
+
+export async function getMoodLog(userId: number, limit = 10): Promise<{ mood: string; timestamp: number }[]> {
+  const snap = await db.collection('mood_log')
+    .where('userId', '==', userId)
+    .orderBy('timestamp', 'desc')
+    .limit(limit)
+    .get()
+  return snap.docs.map(d => ({ mood: d.data().mood, timestamp: d.data().timestamp }))
+}
+
 
 export async function logAudit(entry: AuditEntry): Promise<void> {
   await db.collection('audit_logs').add({
