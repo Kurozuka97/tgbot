@@ -613,11 +613,10 @@ bot.command('model', async (ctx) => {
     const current = pref.model ? `${pref.provider} → \`${pref.model}\`` : `\`${pref.provider}\``
     return ctx.reply(
       `🤖 *AI Provider Settings*\n\nCurrent: ${current}\n\n*Options:*\n` +
-      `• /model auto — smart fallback\n` +
+      `• /model auto — smart fallback (Groq → Mistral → OpenRouter)\n` +
       `• /model groq — force Groq only\n` +
       `• /model mistral — pick from list of models\n` +
-      `• /model openrouter — pick from list of free models\n` +
-      `• /model pollinations — force Pollinations only`,
+      `• /model openrouter — pick from list of free models`,
       { parse_mode: 'Markdown' }
     )
   }
@@ -642,8 +641,8 @@ bot.command('model', async (ctx) => {
     )
   }
 
-  const valid = ['auto', 'groq', 'pollinations']
-  if (!valid.includes(arg)) return ctx.reply(`❌ Invalid option. Choose: auto, groq, mistral, openrouter, pollinations`)
+  const valid = ['auto', 'groq']
+  if (!valid.includes(arg)) return ctx.reply(`❌ Invalid option. Choose: auto, groq, mistral, openrouter`)
 
   pendingModelSelection.delete(userId)
   pendingMistralSelection.delete(userId)
@@ -651,7 +650,6 @@ bot.command('model', async (ctx) => {
   const labels: Record<string, string> = {
     auto: '🔄 Auto fallback (recommended)',
     groq: '⚡ Groq (fastest)',
-    pollinations: '🌸 Pollinations (no key needed)'
   }
   await ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' }) // FIX: added await
 })
