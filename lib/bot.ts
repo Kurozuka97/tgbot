@@ -12,7 +12,9 @@ import {
   approveUser, revokeUser, banUser, unbanUser,
   addPendingUser, removePendingUser, getPendingUsers,
   getApprovedUsers, getUserRecord,
-  trackUsage, logAudit, getRecentAuditLog
+  trackUsage, logAudit, getRecentAuditLog,
+  setMaintenance, isMaintenance, getStats,
+  logMood, getMoodLog
 } from './firebase'
 
 const bot = new Bot(process.env.BOT_TOKEN!)
@@ -29,6 +31,7 @@ function isAdmin(userId: number) {
 async function isAllowed(userId: number): Promise<boolean> {
   if (isAdmin(userId)) return true
   if (await isUserBanned(userId)) return false
+  if (await isMaintenance()) return false
   return isUserAllowed(userId)
 }
 
@@ -106,6 +109,10 @@ bot.command('start', async (ctx) => {
       `• /summarize <url> — summarize a webpage\n` +
       `• /explain <topic> — explain anything simply\n` +
       `• /roast <topic> — roast anything 🔥\n` +
+      `• /roastme — send a photo to get roasted\n` +
+      `• /debate <topic> — AI argues both sides\n` +
+      `• /story <prompt> — generate a short story\n` +
+      `• /code <description> — generate code\n` +
       `• /quote — motivational quote\n` +
       `• /model — switch AI provider\n` +
       `• /persona — switch AI personality\n` +
@@ -117,14 +124,16 @@ bot.command('start', async (ctx) => {
       `• /dadjoke — corny dad joke 👨\n\n` +
       `*Image Commands:*\n` +
       `• /imagine <prompt> — generate an image\n` +
+      `• /imagine <prompt> --anime|--realistic|--pixel|--painting|--sketch\n` +
       `• /sticker <prompt> — generate a sticker\n\n` +
       `*Utility Commands:*\n` +
       `• /qr <text> — generate QR code\n` +
-      `• /calc <expression> — calculator\n\n` +
-      `*Auto:*\n` +
-      `• Send any text → AI chat\n` +
-      `• Send image → analyze\n` +
-      `• Send file → read & summarize\n\n` +
+      `• /calc <expression> — calculator\n` +
+      `• /shorten <url> — shorten a URL\n` +
+      `• /currency <amount> <from> <to> — convert currency\n` +
+      `• /time <city> — current time anywhere\n` +
+      `• /encode <text> — Base64 & URL encode\n` +
+      `• /hash <text> — MD5 & SHA256 hash\n\n` +
       `*Inline Mode:*\n` +
       `• @botname <query> — AI anywhere\n` +
       `• @botname imagine <prompt> — generate image anywhere`,
@@ -417,7 +426,10 @@ bot.command('help', async (ctx) => {
       `/revoke <id> — remove access\n` +
       `/ban <id> — permanent ban\n` +
       `/unban <id> — unban user\n` +
-      `/logs — audit log\n`
+      `/logs — audit log\n` +
+      `/broadcast <message> — message all users\n` +
+      `/stats — usage statistics\n` +
+      `/maintenance on|off — lock/unlock bot\n`
     : ''
 
   await ctx.reply(
@@ -429,6 +441,10 @@ bot.command('help', async (ctx) => {
     `/summarize <url> — summarize a webpage\n` +
     `/explain <topic> — explain anything simply\n` +
     `/roast <topic> — roast anything 🔥\n` +
+    `/roastme — send photo to get roasted\n` +
+    `/debate <topic> — AI argues both sides\n` +
+    `/story <prompt> — generate a short story\n` +
+    `/code <description> — generate code\n` +
     `/quote — motivational quote\n` +
     `/model — switch AI provider\n` +
     `/persona — switch AI personality\n` +
@@ -439,11 +455,16 @@ bot.command('help', async (ctx) => {
     `/darkjoke — dark humour 😈\n` +
     `/dadjoke — corny dad joke 👨\n\n` +
     `*Image:*\n` +
-    `/imagine <prompt> — generate image\n` +
+    `/imagine <prompt> [--anime|--realistic|--pixel|--painting|--sketch]\n` +
     `/sticker <prompt> — generate sticker\n\n` +
     `*Utility:*\n` +
     `/qr <text> — generate QR code\n` +
-    `/calc <expression> — calculator\n\n` +
+    `/calc <expression> — calculator\n` +
+    `/shorten <url> — shorten a URL\n` +
+    `/currency <amount> <from> <to> — convert currency\n` +
+    `/time <city> — current time anywhere\n` +
+    `/encode <text> — Base64 & URL encode\n` +
+    `/hash <text> — MD5 & SHA256 hash\n\n` +
     `*Inline:*\n` +
     `@botname <query> — AI anywhere\n` +
     `@botname imagine <prompt> — image anywhere` +
@@ -885,6 +906,233 @@ bot.on('inline_query', async (ctx) => {
       description: 'Try again'
     }])
   }
+})
+
+// ─── AI Upgrade Commands ──────────────────────────────────────────────────────
+
+bot.command('debate', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const topic = ctx.match.trim()
+  if (!topic) return ctx.reply('Usage: /debate <topic>')
+  const msg = await ctx.reply('⚖️ Preparing both sides...')
+  try {
+    const result = await chat(`Debate the topic: "${topic}". Present strong arguments FOR and AGAINST in a structured format. Label them clearly. Be balanced and thorough.`, [], ctx.from?.id)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('story', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const prompt = ctx.match.trim()
+  if (!prompt) return ctx.reply('Usage: /story <prompt>')
+  const msg = await ctx.reply('📖 Writing story...')
+  try {
+    const result = await chat(`Write a short, engaging story based on this prompt: "${prompt}". Keep it under 300 words. Make it interesting with a clear beginning, middle, and end.`, [], ctx.from?.id)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('code', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const desc = ctx.match.trim()
+  if (!desc) return ctx.reply('Usage: /code <description>\nExample: /code fizzbuzz in python')
+  const msg = await ctx.reply('💻 Generating code...')
+  try {
+    const result = await chat(`Generate clean, well-commented code for: "${desc}". Include a brief explanation of how it works.`, [], ctx.from?.id)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('roastme', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const photos = ctx.message?.photo
+  if (!photos || photos.length === 0) return ctx.reply('📸 Send a photo with the caption /roastme to get roasted!')
+  const msg = await ctx.reply('🔥 Analyzing...')
+  try {
+    const photo = photos.at(-1)!
+    const { buffer, mimeType } = await fetchFile(photo.file_id)
+    const part = fileToGenerativePart(buffer, mimeType)
+    const result = await chat('Give a funny, savage but lighthearted roast based on what you see in this photo. Be creative and humorous, not cruel. Keep it to 3-5 sentences.', [part], ctx.from?.id)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+// /imagine with style flags
+// Override the existing /imagine with style support
+bot.command('imagine', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  let prompt = ctx.match.trim()
+  if (!prompt) return ctx.reply('Usage: /imagine <prompt> [--anime|--realistic|--pixel|--painting|--sketch]')
+
+  const styleMap: Record<string, string> = {
+    '--anime': 'anime art style, cel shaded, vibrant',
+    '--realistic': 'photorealistic, 8k, hyperdetailed, cinematic lighting',
+    '--pixel': 'pixel art, 16-bit retro game style',
+    '--painting': 'oil painting, classical art style, brushstrokes visible',
+    '--sketch': 'pencil sketch, hand drawn, black and white'
+  }
+
+  let styleLabel = ''
+  for (const [flag, style] of Object.entries(styleMap)) {
+    if (prompt.includes(flag)) {
+      prompt = prompt.replace(flag, '').trim() + ', ' + style
+      styleLabel = ` _(${flag.replace('--', '')})_`
+      break
+    }
+  }
+
+  const msg = await ctx.reply('🎨 Generating image...')
+  try {
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`
+    await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
+    await ctx.replyWithPhoto(url, { caption: `🎨 *${ctx.match.trim()}*${styleLabel}`, parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+// ─── Utility Commands ─────────────────────────────────────────────────────────
+
+bot.command('shorten', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const url = ctx.match.trim()
+  if (!url) return ctx.reply('Usage: /shorten <url>')
+  const msg = await ctx.reply('🔗 Shortening...')
+  try {
+    const res = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(url)}`)
+    if (!res.ok) throw new Error('TinyURL failed')
+    const short = await res.text()
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔗 ${short}`)
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('currency', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const args = ctx.match.trim().split(' ')
+  if (args.length < 3) return ctx.reply('Usage: /currency <amount> <from> <to>\nExample: /currency 100 USD MYR')
+  const [amount, from, to] = args
+  const msg = await ctx.reply('💱 Converting...')
+  try {
+    const res = await fetch(`https://open.er-api.com/v6/latest/${from.toUpperCase()}`)
+    if (!res.ok) throw new Error('API failed')
+    const data = await res.json()
+    const rate = data.rates?.[to.toUpperCase()]
+    if (!rate) throw new Error(`Unknown currency: ${to.toUpperCase()}`)
+    const result = (parseFloat(amount) * rate).toFixed(2)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+      `💱 *${amount} ${from.toUpperCase()}* = *${result} ${to.toUpperCase()}*\n_Rate: 1 ${from.toUpperCase()} = ${rate} ${to.toUpperCase()}_`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('time', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const city = ctx.match.trim()
+  if (!city) return ctx.reply('Usage: /time <city>\nExample: /time Tokyo')
+  const msg = await ctx.reply('🕐 Checking time...')
+  try {
+    const res = await fetch(`https://worldtimeapi.org/api/timezone`)
+    const zones: string[] = await res.json()
+    const match = zones.find(z => z.toLowerCase().includes(city.toLowerCase()))
+    if (!match) throw new Error(`City not found: ${city}`)
+    const tzRes = await fetch(`https://worldtimeapi.org/api/timezone/${match}`)
+    const tzData = await tzRes.json()
+    const dt = new Date(tzData.datetime)
+    const formatted = dt.toLocaleString('en-MY', { timeZone: match, dateStyle: 'full', timeStyle: 'short' })
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+      `🕐 *${match}*\n${formatted}`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('encode', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const input = ctx.match.trim()
+  if (!input) return ctx.reply('Usage: /encode <text>')
+  const b64 = Buffer.from(input).toString('base64')
+  const url = encodeURIComponent(input)
+  await ctx.reply(
+    `🔐 *Encoded:*\n\n*Base64:*\n\`${b64}\`\n\n*URL:*\n\`${url}\``,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+bot.command('hash', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const input = ctx.match.trim()
+  if (!input) return ctx.reply('Usage: /hash <text>')
+  const { createHash } = await import('crypto')
+  const md5 = createHash('md5').update(input).digest('hex')
+  const sha256 = createHash('sha256').update(input).digest('hex')
+  await ctx.reply(
+    `#️⃣ *Hashes:*\n\n*MD5:*\n\`${md5}\`\n\n*SHA256:*\n\`${sha256}\``,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+// ─── Admin Upgrade Commands ───────────────────────────────────────────────────
+
+bot.command('broadcast', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const message = ctx.match.trim()
+  if (!message) return ctx.reply('Usage: /broadcast <message>')
+  const users = await getApprovedUsers()
+  const msg = await ctx.reply(`📡 Broadcasting to ${users.length} users...`)
+  let success = 0, failed = 0
+  for (const user of users) {
+    try {
+      await bot.api.sendMessage(user.userId, `📢 *Broadcast:*\n\n${message}`, { parse_mode: 'Markdown' })
+      success++
+    } catch { failed++ }
+  }
+  await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+    `📡 *Broadcast complete*\n\n✅ Sent: ${success}\n❌ Failed: ${failed}`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
+bot.command('stats', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('📊 Fetching stats...')
+  try {
+    const { totalUsers, totalMessages, topUsers } = await getStats()
+    const topList = topUsers.map((u, i) => `${i + 1}. ${u.tag} — ${u.count} msgs`).join('\n')
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+      `📊 *Bot Stats*\n\n👥 Total Users: *${totalUsers}*\n💬 Total Messages: *${totalMessages}*\n\n*🏆 Top 5 Users:*\n${topList}`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('maintenance', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const arg = ctx.match.trim().toLowerCase()
+  if (!arg || !['on', 'off'].includes(arg)) return ctx.reply('Usage: /maintenance on|off')
+  await setMaintenance(arg === 'on')
+  await ctx.reply(
+    arg === 'on'
+      ? '🔧 *Maintenance mode ON* — all non-admin users are blocked.'
+      : '✅ *Maintenance mode OFF* — bot is back online.',
+    { parse_mode: 'Markdown' }
+  )
 })
 
 export default bot
