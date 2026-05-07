@@ -1,67 +1,50 @@
 process.emitWarning = () => {}
-import { Bot, InputFile } from 'grammy'
+import { Bot, InputFile, InlineKeyboard } from 'grammy'
 import {
   chat, chatWithSearch, fileToGenerativePart,
   getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS,
   getHistory, appendHistory, clearHistory,
   getPersona, setPersona, PERSONA_LIST
 } from './ai'
-import { db } from './firebase'
+import {
+  isUserAllowed, isUserBanned,
+  approveUser, revokeUser, banUser, unbanUser,
+  addPendingUser, removePendingUser, getPendingUsers,
+  getApprovedUsers, getUserRecord,
+  trackUsage, logAudit, getRecentAuditLog
+} from './firebase'
 
 const bot = new Bot(process.env.BOT_TOKEN!)
 
+// ─── Admin Setup ──────────────────────────────────────────────────────────────
+
 const ADMIN_ID = Number(process.env.ADMIN_ID)
 
-// ─── User Access (Firestore) ───────────────────────────────────────────────
+function isAdmin(userId: number) {
+  return userId === ADMIN_ID
+}
 
 async function isAllowed(userId: number): Promise<boolean> {
-  if (userId === ADMIN_ID) return true
-  const doc = await db.collection('tgbot_users').doc(String(userId)).get()
-  return doc.exists && doc.data()?.allowed === true
+  if (isAdmin(userId)) return true
+  return isUserAllowed(userId)
 }
 
-async function allowUser(userId: number, username?: string) {
-  await db.collection('tgbot_users').doc(String(userId)).set({
-    allowed: true,
-    username: username ?? null,
-    allowedAt: new Date().toISOString()
-  }, { merge: true })
-}
-
-async function blockUser(userId: number) {
-  await db.collection('tgbot_users').doc(String(userId)).set({
-    allowed: false,
-    blockedAt: new Date().toISOString()
-  }, { merge: true })
-}
-
-async function addPendingRequest(userId: number, username?: string, firstName?: string) {
-  await db.collection('tgbot_pending').doc(String(userId)).set({
-    userId,
-    username: username ?? null,
-    firstName: firstName ?? null,
-    requestedAt: new Date().toISOString()
-  })
-}
-
-async function removePending(userId: number) {
-  await db.collection('tgbot_pending').doc(String(userId)).delete()
-}
-
-async function getPendingRequests() {
-  const snap = await db.collection('tgbot_pending').get()
-  return snap.docs.map(d => d.data())
-}
-
-async function getAllowedUsers() {
-  const snap = await db.collection('tgbot_users').where('allowed', '==', true).get()
-  return snap.docs.map(d => d.data())
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const pendingModelSelection = new Map<number, string[]>()
 const pendingMistralSelection = new Map<number, boolean>()
+
+function formatDuration(ms: number): string {
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
+}
+
+function formatDate(ts?: number): string {
+  if (!ts) return 'never'
+  return new Date(ts).toLocaleString('en-MY', { timeZone: 'Asia/Kuala_Lumpur' })
+}
 
 async function fetchFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string }> {
   const file = await bot.api.getFile(fileId)
@@ -98,121 +81,342 @@ async function fetchUrl(url: string): Promise<string> {
   }
 }
 
-// ─── Admin Commands ────────────────────────────────────────────────────────
+// ─── /start ───────────────────────────────────────────────────────────────────
+
+bot.command('start', async (ctx) => {
+  const userId = ctx.from?.id ?? 0
+  const username = ctx.from?.username
+  const firstName = ctx.from?.first_name ?? 'Unknown'
+  const languageCode = ctx.from?.language_code
+
+  // Check ban first
+  if (!isAdmin(userId) && await isUserBanned(userId)) {
+    return ctx.reply('🚫 You have been banned from using this bot.')
+  }
+
+  // Already allowed — show menu
+  if (await isAllowed(userId)) {
+    return ctx.reply(
+      `👋 *Hey! I'm your multipurpose AI assistant.*\n\n` +
+      `*AI Commands:*\n` +
+      `• /search <query> — AI-powered search\n` +
+      `• /weather <city> — current weather\n` +
+      `• /translate <lang> <text> — translate text\n` +
+      `• /summarize <url> — summarize a webpage\n` +
+      `• /explain <topic> — explain anything simply\n` +
+      `• /roast <topic> — roast anything 🔥\n` +
+      `• /quote — motivational quote\n` +
+      `• /model — switch AI provider\n` +
+      `• /persona — switch AI personality\n` +
+      `• /continue — continue last response\n` +
+      `• /clear — clear conversation memory\n\n` +
+      `*Image Commands:*\n` +
+      `• /imagine <prompt> — generate an image\n` +
+      `• /sticker <prompt> — generate a sticker\n\n` +
+      `*Utility Commands:*\n` +
+      `• /qr <text> — generate QR code\n` +
+      `• /calc <expression> — calculator\n\n` +
+      `*Auto:*\n` +
+      `• Send any text → AI chat\n` +
+      `• Send image → analyze\n` +
+      `• Send file → read & summarize\n\n` +
+      `*Inline Mode:*\n` +
+      `• @botname <query> — AI anywhere\n` +
+      `• @botname imagine <prompt> — generate image anywhere`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+
+  // Try to register as pending
+  const result = await addPendingUser({ userId, username, firstName, languageCode })
+
+  if (!result.ok) {
+    const wait = formatDuration(result.cooldownMs!)
+    return ctx.reply(
+      `⏳ You already have a pending request.\n\nPlease wait ${wait} before requesting again.`
+    )
+  }
+
+  await ctx.reply(
+    `👋 Hey *${firstName}*!\n\n` +
+    `Your access request has been sent to the admin. ` +
+    `You'll be notified once approved. ⏳`,
+    { parse_mode: 'Markdown' }
+  )
+
+  // Notify admin with inline buttons
+  const userTag = username ? `@${username}` : firstName
+  const keyboard = new InlineKeyboard()
+    .text('✅ Approve', `approve:${userId}`)
+    .text('❌ Reject', `reject:${userId}`)
+    .row()
+    .text('🚫 Ban', `ban:${userId}`)
+
+  await bot.api.sendMessage(
+    ADMIN_ID,
+    `🔔 *New Access Request*\n\n` +
+    `👤 Name: ${userTag}\n` +
+    `🆔 ID: \`${userId}\`\n` +
+    `🌐 Language: ${languageCode ?? 'unknown'}`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  )
+})
+
+// ─── Inline Button Callbacks ──────────────────────────────────────────────────
+
+bot.callbackQuery(/^approve:(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery('⛔ Unauthorized')
+
+  const targetId = Number(ctx.match[1])
+  const pending = (await getPendingUsers()).find(u => u.userId === targetId)
+
+  await approveUser(targetId, ADMIN_ID, {
+    username: pending?.username ?? undefined,
+    firstName: pending?.firstName ?? undefined,
+    languageCode: pending?.languageCode ?? undefined
+  })
+  await removePendingUser(targetId)
+  await logAudit({
+    action: 'approve', adminId: ADMIN_ID, targetId,
+    targetUsername: pending?.username, timestamp: Date.now()
+  })
+
+  try {
+    await bot.api.sendMessage(
+      targetId,
+      `✅ Your access has been *approved!*\n\nSend /start to begin.`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch {}
+
+  const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
+  await ctx.editMessageText(`✅ *Approved:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
+  await ctx.answerCallbackQuery('✅ User approved')
+})
+
+bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery('⛔ Unauthorized')
+
+  const targetId = Number(ctx.match[1])
+  const pending = (await getPendingUsers()).find(u => u.userId === targetId)
+
+  await removePendingUser(targetId)
+  await logAudit({
+    action: 'reject', adminId: ADMIN_ID, targetId,
+    targetUsername: pending?.username, timestamp: Date.now()
+  })
+
+  try {
+    await bot.api.sendMessage(
+      targetId,
+      `❌ Your access request has been *rejected.*\n\nContact the admin if you think this is a mistake.`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch {}
+
+  const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
+  await ctx.editMessageText(`❌ *Rejected:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
+  await ctx.answerCallbackQuery('❌ User rejected')
+})
+
+bot.callbackQuery(/^ban:(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery('⛔ Unauthorized')
+
+  const targetId = Number(ctx.match[1])
+  const pending = (await getPendingUsers()).find(u => u.userId === targetId)
+
+  await banUser(targetId, ADMIN_ID, {
+    username: pending?.username ?? undefined,
+    firstName: pending?.firstName ?? undefined
+  })
+  await logAudit({
+    action: 'ban', adminId: ADMIN_ID, targetId,
+    targetUsername: pending?.username, timestamp: Date.now()
+  })
+
+  try {
+    await bot.api.sendMessage(
+      targetId,
+      `🚫 You have been *banned* from this bot.`,
+      { parse_mode: 'Markdown' }
+    )
+  } catch {}
+
+  const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
+  await ctx.editMessageText(`🚫 *Banned:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
+  await ctx.answerCallbackQuery('🚫 User banned')
+})
+
+// ─── Admin Commands ───────────────────────────────────────────────────────────
 
 bot.command('admin', async (ctx) => {
-  if (ctx.from?.id !== ADMIN_ID) return
-  const pending = await getPendingRequests()
-  const allowed = await getAllowedUsers()
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
 
-  const pendingList = pending.length
-    ? pending.map(u => `• ${u.firstName ?? 'Unknown'} (@${u.username ?? 'no username'}) — \`${u.userId}\``).join('\n')
-    : '_None_'
+  const pending = await getPendingUsers()
 
-  const allowedList = allowed.length
-    ? allowed.map(u => `• @${u.username ?? 'no username'} — \`${u.userId}\``).join('\n')
-    : '_None_'
+  if (pending.length === 0) {
+    return ctx.reply('✅ No pending access requests.')
+  }
 
-  ctx.reply(
-    `🔐 *Admin Panel*\n\n` +
-    `*Pending Requests (${pending.length}):*\n${pendingList}\n\n` +
-    `*Allowed Users (${allowed.length}):*\n${allowedList}\n\n` +
-    `*Commands:*\n` +
-    `/allow <user_id> — approve user\n` +
-    `/block <user_id> — remove user\n` +
-    `/admin — refresh this panel`,
+  const list = pending.map(u => {
+    const tag = u.username ? `@${u.username}` : u.firstName ?? 'Unknown'
+    const count = u.requestCount > 1 ? ` _(${u.requestCount}x requests)_` : ''
+    return `• ${tag}${count}\n  ID: \`${u.userId}\`\n  Requested: ${formatDate(u.requestedAt)}`
+  }).join('\n\n')
+
+  const keyboard = new InlineKeyboard()
+
+  pending.forEach(u => {
+    const label = u.username ? `@${u.username}` : u.firstName ?? String(u.userId)
+    keyboard
+      .text(`✅ ${label}`, `approve:${u.userId}`)
+      .text(`❌`, `reject:${u.userId}`)
+      .text(`🚫`, `ban:${u.userId}`)
+      .row()
+  })
+
+  return ctx.reply(
+    `👥 *Pending Requests (${pending.length}):*\n\n${list}`,
+    { parse_mode: 'Markdown', reply_markup: keyboard }
+  )
+})
+
+bot.command('users', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+
+  const users = await getApprovedUsers()
+
+  if (users.length === 0) {
+    return ctx.reply('No approved users yet.')
+  }
+
+  const list = users.map(u => {
+    const tag = u.username ? `@${u.username}` : u.firstName ?? 'Unknown'
+    const lastSeen = u.lastActive ? formatDate(u.lastActive) : 'never'
+    return `• ${tag} — \`${u.userId}\`\n  💬 ${u.messageCount} msgs · Last: ${lastSeen}`
+  }).join('\n\n')
+
+  return ctx.reply(
+    `👥 *Approved Users (${users.length}):*\n\n${list}`,
     { parse_mode: 'Markdown' }
   )
 })
 
 bot.command('allow', async (ctx) => {
-  if (ctx.from?.id !== ADMIN_ID) return
-  const targetId = Number(ctx.match.trim())
-  if (!targetId) return ctx.reply('Usage: /allow <user_id>')
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
 
-  const pendingDoc = await db.collection('tgbot_pending').doc(String(targetId)).get()
-  const username = pendingDoc.exists ? pendingDoc.data()?.username : undefined
+  const arg = ctx.match.trim()
+  if (!arg) return ctx.reply('Usage: /allow <user_id>')
 
-  await allowUser(targetId, username)
-  await removePending(targetId)
+  const targetId = Number(arg)
+  if (isNaN(targetId)) return ctx.reply('❌ Invalid user ID.')
 
-  try {
-    await bot.api.sendMessage(targetId, '✅ Your access has been approved! You can now use the bot.')
-  } catch {}
-
-  ctx.reply(`✅ User \`${targetId}\` approved.`, { parse_mode: 'Markdown' })
-})
-
-bot.command('block', async (ctx) => {
-  if (ctx.from?.id !== ADMIN_ID) return
-  const targetId = Number(ctx.match.trim())
-  if (!targetId) return ctx.reply('Usage: /block <user_id>')
-
-  await blockUser(targetId)
-  await removePending(targetId)
+  const pending = (await getPendingUsers()).find(u => u.userId === targetId)
+  await approveUser(targetId, ADMIN_ID, {
+    username: pending?.username,
+    firstName: pending?.firstName,
+    languageCode: pending?.languageCode
+  })
+  await removePendingUser(targetId)
+  await logAudit({ action: 'approve', adminId: ADMIN_ID, targetId, targetUsername: pending?.username, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, '⛔ Your access has been revoked.')
+    await bot.api.sendMessage(targetId, `✅ Your access has been *approved!*\n\nSend /start to begin.`, { parse_mode: 'Markdown' })
   } catch {}
 
-  ctx.reply(`⛔ User \`${targetId}\` blocked.`, { parse_mode: 'Markdown' })
+  return ctx.reply(`✅ User \`${targetId}\` approved.`, { parse_mode: 'Markdown' })
 })
 
-// ─── Start / Help ──────────────────────────────────────────────────────────
+bot.command('revoke', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
 
-bot.command('start', async (ctx) => {
-  const userId = ctx.from?.id!
-  const allowed = await isAllowed(userId)
+  const arg = ctx.match.trim()
+  if (!arg) return ctx.reply('Usage: /revoke <user_id>')
 
-  if (!allowed) {
-    await addPendingRequest(userId, ctx.from?.username, ctx.from?.first_name)
-    try {
-      await bot.api.sendMessage(
-        ADMIN_ID,
-        `🔔 *New Access Request*\n\nName: ${ctx.from?.first_name ?? 'Unknown'}\nUsername: @${ctx.from?.username ?? 'none'}\nID: \`${userId}\`\n\nReply: /allow ${userId} or /block ${userId}`,
-        { parse_mode: 'Markdown' }
-      )
-    } catch {}
-    return ctx.reply('👋 Hi! Your access request has been sent to the admin. Please wait for approval.')
+  const targetId = Number(arg)
+  if (isNaN(targetId)) return ctx.reply('❌ Invalid user ID.')
+
+  await revokeUser(targetId, ADMIN_ID)
+  await logAudit({ action: 'revoke', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
+
+  try {
+    await bot.api.sendMessage(targetId, `⚠️ Your bot access has been *revoked.*`, { parse_mode: 'Markdown' })
+  } catch {}
+
+  return ctx.reply(`🔒 User \`${targetId}\` revoked.`, { parse_mode: 'Markdown' })
+})
+
+bot.command('ban', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+
+  const arg = ctx.match.trim()
+  if (!arg) return ctx.reply('Usage: /ban <user_id>')
+
+  const targetId = Number(arg)
+  if (isNaN(targetId)) return ctx.reply('❌ Invalid user ID.')
+
+  const record = await getUserRecord(targetId)
+  await banUser(targetId, ADMIN_ID, { username: record?.username, firstName: record?.firstName })
+  await logAudit({ action: 'ban', adminId: ADMIN_ID, targetId, targetUsername: record?.username, timestamp: Date.now() })
+
+  try {
+    await bot.api.sendMessage(targetId, `🚫 You have been *banned* from this bot.`, { parse_mode: 'Markdown' })
+  } catch {}
+
+  return ctx.reply(`🚫 User \`${targetId}\` banned permanently.`, { parse_mode: 'Markdown' })
+})
+
+bot.command('unban', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+
+  const arg = ctx.match.trim()
+  if (!arg) return ctx.reply('Usage: /unban <user_id>')
+
+  const targetId = Number(arg)
+  if (isNaN(targetId)) return ctx.reply('❌ Invalid user ID.')
+
+  await unbanUser(targetId)
+  await logAudit({ action: 'unban', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
+
+  return ctx.reply(`✅ User \`${targetId}\` unbanned. They can request access again.`, { parse_mode: 'Markdown' })
+})
+
+bot.command('logs', async (ctx) => {
+  if (!isAdmin(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+
+  const logs = await getRecentAuditLog(15)
+
+  if (logs.length === 0) return ctx.reply('No audit logs yet.')
+
+  const icons: Record<string, string> = {
+    approve: '✅', reject: '❌', ban: '🚫', unban: '🔓', revoke: '🔒'
   }
 
-  ctx.reply(
-    `👋 *Hey! I'm your multipurpose AI assistant.*\n\n` +
-    `*AI Commands:*\n` +
-    `• /search <query> — AI-powered search\n` +
-    `• /weather <city> — current weather\n` +
-    `• /translate <lang> <text> — translate text\n` +
-    `• /summarize <url> — summarize a webpage\n` +
-    `• /explain <topic> — explain anything simply\n` +
-    `• /roast <topic> — roast anything 🔥\n` +
-    `• /quote — motivational quote\n` +
-    `• /joke — random joke\n` +
-    `• /dark — dark humor\n` +
-    `• /dad — dad joke\n` +
-    `• /model — switch AI provider\n` +
-    `• /persona — switch AI personality\n` +
-    `• /continue — continue last response\n` +
-    `• /clear — clear conversation memory\n\n` +
-    `*Image Commands:*\n` +
-    `• /imagine <prompt> — generate an image\n` +
-    `• /sticker <prompt> — generate a sticker\n\n` +
-    `*Utility Commands:*\n` +
-    `• /qr <text> — generate QR code\n` +
-    `• /calc <expression> — calculator\n\n` +
-    `*Auto:*\n` +
-    `• Send any text → AI chat\n` +
-    `• Send image → analyze\n` +
-    `• Send file → read & summarize\n\n` +
-    `*Inline Mode:*\n` +
-    `• @botname <query> — AI anywhere\n` +
-    `• @botname imagine <prompt> — generate image anywhere\n\n` +
-    `Type /help to see this again!`,
-    { parse_mode: 'Markdown' }
-  )
+  const list = logs.map(l => {
+    const icon = icons[l.action] ?? '•'
+    const target = l.targetUsername ? `@${l.targetUsername}` : `\`${l.targetId}\``
+    const time = formatDate(l.timestamp)
+    return `${icon} ${l.action} → ${target}\n  ${time}`
+  }).join('\n\n')
+
+  return ctx.reply(`📋 *Recent Actions:*\n\n${list}`, { parse_mode: 'Markdown' })
 })
 
-bot.command('help', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+// ─── Existing Commands ────────────────────────────────────────────────────────
+
+bot.command('help', (ctx) => {
+  const userId = ctx.from?.id ?? 0
+  const adminSection = isAdmin(userId)
+    ? `\n\n*👑 Admin:*\n` +
+      `/admin — pending requests\n` +
+      `/users — list approved users\n` +
+      `/allow <id> — approve user\n` +
+      `/revoke <id> — remove access\n` +
+      `/ban <id> — permanent ban\n` +
+      `/unban <id> — unban user\n` +
+      `/logs — audit log\n`
+    : ''
+
   ctx.reply(
     `*Available Commands:*\n\n` +
     `*AI:*\n` +
@@ -235,13 +439,11 @@ bot.command('help', async (ctx) => {
     `/calc <expression> — calculator\n\n` +
     `*Inline:*\n` +
     `@botname <query> — AI anywhere\n` +
-    `@botname imagine <prompt> — image anywhere\n\n` +
-    `/help — show this menu`,
+    `@botname imagine <prompt> — image anywhere` +
+    adminSection,
     { parse_mode: 'Markdown' }
   )
 })
-
-// ─── AI Commands ──────────────────────────────────────────────────────────
 
 bot.command('search', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
@@ -250,7 +452,7 @@ bot.command('search', async (ctx) => {
   const msg = await ctx.reply('🔍 Searching...')
   try {
     const result = await chatWithSearch(query, ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Search failed: ${String(err)}`)
   }
@@ -263,7 +465,7 @@ bot.command('weather', async (ctx) => {
   const msg = await ctx.reply('🌤️ Checking weather...')
   try {
     const result = await chat(`What is the typical/current weather in ${city}? Provide temperature range (Celsius), humidity, wind, and general conditions. Format nicely with emojis. Note if data may not be real-time.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -293,7 +495,7 @@ bot.command('translate', async (ctx) => {
   const msg = await ctx.reply('🌐 Translating...')
   try {
     const result = await chat(`Translate the following text to ${targetLang}. Reply with only the translation, nothing else:\n\n${text}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 ${targetLang}:\n${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 *${targetLang}:*\n${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -307,7 +509,7 @@ bot.command('summarize', async (ctx) => {
   try {
     const content = await fetchUrl(url)
     const result = await chat(`Summarize the following content in clear bullet points. Be concise:\n\n${content}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 Summary:\n${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 *Summary:*\n${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -320,7 +522,7 @@ bot.command('explain', async (ctx) => {
   const msg = await ctx.reply('🧠 Thinking...')
   try {
     const result = await chat(`Explain "${topic}" in simple terms that anyone can understand. Be concise and use examples.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -333,7 +535,7 @@ bot.command('roast', async (ctx) => {
   const msg = await ctx.reply('🔥 Roasting...')
   try {
     const result = await chat(`Give a funny, savage but lighthearted roast about: "${topic}". Keep it humorous, not mean-spirited. 3-5 sentences.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -344,7 +546,7 @@ bot.command('quote', async (ctx) => {
   const msg = await ctx.reply('✨ Generating quote...')
   try {
     const result = await chat('Generate one unique, powerful motivational quote. Format: "quote" — Author (or "Unknown"). Just the quote, nothing else.', [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `✨ ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `✨ ${result}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -382,7 +584,7 @@ bot.command('continue', async (ctx) => {
     const result = await chat('Continue from where you left off.', [], userId, history)
     await appendHistory(userId, 'user', 'Continue from where you left off.')
     await appendHistory(userId, 'assistant', result)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -447,44 +649,6 @@ bot.command('model', async (ctx) => {
   ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' })
 })
 
-
-// ─── Humor Commands ────────────────────────────────────────────────────────
-
-bot.command('joke', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  const msg = await ctx.reply('😄 Generating joke...')
-  try {
-    const result = await chat('Tell me a random funny joke. Be witty and creative.', [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😄 ${result}`)
-  } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
-  }
-})
-
-bot.command('dark', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  const msg = await ctx.reply('🌑 Generating dark humor...')
-  try {
-    const result = await chat('Tell me a random dark humor joke. Keep it clever and satirical.', [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌑 ${result}`)
-  } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
-  }
-})
-
-bot.command('dad', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  const msg = await ctx.reply('👨 Generating dad joke...')
-  try {
-    const result = await chat('Tell me a random dad joke. Make it gloriously terrible and punny.', [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `👨 ${result}`)
-  } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
-  }
-})
-
-// ─── Image Commands ────────────────────────────────────────────────────────
-
 bot.command('imagine', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const prompt = ctx.match.trim()
@@ -513,8 +677,6 @@ bot.command('sticker', async (ctx) => {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
-
-// ─── Utility Commands ──────────────────────────────────────────────────────
 
 bot.command('qr', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
@@ -547,43 +709,51 @@ bot.command('calc', async (ctx) => {
   }
 })
 
-// ─── Media Handlers ────────────────────────────────────────────────────────
+// ─── Media Handlers ───────────────────────────────────────────────────────────
 
 bot.on('message:photo', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const userId = ctx.from?.id ?? 0
+  if (!await isAllowed(userId)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('🖼️ Analyzing image...')
   try {
     const photo = ctx.message.photo.at(-1)!
     const { buffer, mimeType } = await fetchFile(photo.file_id)
     const part = fileToGenerativePart(buffer, mimeType)
     const caption = ctx.message.caption ?? 'Describe this image in detail.'
-    const result = await chat(caption, [part], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    const result = await chat(caption, [part], userId)
+    const isFirst = await trackUsage(userId)
+    if (isFirst && !isAdmin(userId)) {
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'Markdown' })
+    }
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
 bot.on('message:document', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const userId = ctx.from?.id ?? 0
+  if (!await isAllowed(userId)) return ctx.reply('⛔ Unauthorized.')
   const msg = await ctx.reply('📄 Reading file...')
   try {
     const doc = ctx.message.document
     const { buffer, mimeType } = await fetchFile(doc.file_id)
     const part = fileToGenerativePart(buffer, mimeType)
     const caption = ctx.message.caption ?? 'Summarize the contents of this file.'
-    const result = await chat(caption, [part], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    const result = await chat(caption, [part], userId)
+    const isFirst = await trackUsage(userId)
+    if (isFirst && !isAdmin(userId)) {
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'Markdown' })
+    }
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
-// ─── Text Handler ──────────────────────────────────────────────────────────
-
 bot.on('message:text', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  const userId = ctx.from?.id!
+  const userId = ctx.from?.id ?? 0
+  if (!await isAllowed(userId)) return ctx.reply('⛔ Unauthorized.')
   const text = ctx.message.text
 
   if (pendingMistralSelection.has(userId)) {
@@ -616,13 +786,20 @@ bot.on('message:text', async (ctx) => {
     const result = await chat(text, [], userId, history)
     await appendHistory(userId, 'user', text)
     await appendHistory(userId, 'assistant', result)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+
+    // Track usage + notify admin on first message
+    const isFirst = await trackUsage(userId)
+    if (isFirst && !isAdmin(userId)) {
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`, { parse_mode: 'Markdown' })
+    }
+
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Error: ${String(err)}`)
   }
 })
 
-// ─── Inline Query ──────────────────────────────────────────────────────────
+// ─── Inline Query ─────────────────────────────────────────────────────────────
 
 bot.on('inline_query', async (ctx) => {
   const query = ctx.inlineQuery.query.trim()
@@ -656,7 +833,7 @@ bot.on('inline_query', async (ctx) => {
       type: 'article',
       id: '1',
       title: query.slice(0, 60),
-      input_message_content: { message_text: result },
+      input_message_content: { message_text: result, parse_mode: 'Markdown' },
       description: result.slice(0, 100)
     }], { cache_time: 0 })
   } catch {
