@@ -22,7 +22,7 @@ export async function POST(req: Request) {
     processed.add(updateId)
     // Keep set small — only last 100 update IDs
     if (processed.size > 100) {
-      const first = processed.values().next().value
+      const first = processed.values().next().value as number
       processed.delete(first)
     }
   }
