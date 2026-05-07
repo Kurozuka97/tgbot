@@ -261,7 +261,7 @@ export async function chat(
   const pref = userId ? await getUserProvider(userId) : { provider: 'auto' }
   const { provider, model: specificModel } = pref
   const persona = userId ? await getPersona(userId) : 'default'
-  const systemPrompt = getSystemPrompt(persona)
+  const systemPrompt = getSystemPrompt(persona) + '\n\nNever use Markdown formatting. Plain text only. No asterisks, no backticks, no underscores for formatting.'
 
   // Inject persona reminder into user message for non-default personas
   // This forces weaker models to stay in character
