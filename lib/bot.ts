@@ -1,5 +1,6 @@
 process.emitWarning = () => {}
 import { Bot, InputFile, InlineKeyboard } from 'grammy'
+import { evaluate } from 'mathjs'
 import {
   chat, chatWithSearch, fileToGenerativePart,
   getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS,
@@ -24,6 +25,7 @@ function isAdmin(userId: number) {
   return userId === ADMIN_ID
 }
 
+// FIX: ban check now included in isAllowed so it's enforced everywhere
 async function isAllowed(userId: number): Promise<boolean> {
   if (isAdmin(userId)) return true
   if (await isUserBanned(userId)) return false
@@ -90,12 +92,10 @@ bot.command('start', async (ctx) => {
   const firstName = ctx.from?.first_name ?? 'Unknown'
   const languageCode = ctx.from?.language_code
 
-  // Check ban first
   if (!isAdmin(userId) && await isUserBanned(userId)) {
     return ctx.reply('🚫 You have been banned from using this bot.')
   }
 
-  // Already allowed — show menu
   if (await isAllowed(userId)) {
     return ctx.reply(
       `👋 *Hey! I'm your multipurpose AI assistant.*\n\n` +
@@ -111,6 +111,10 @@ bot.command('start', async (ctx) => {
       `• /persona — switch AI personality\n` +
       `• /continue — continue last response\n` +
       `• /clear — clear conversation memory\n\n` +
+      `*Humor Commands:*\n` +
+      `• /joke — random joke 😄\n` +
+      `• /darkjoke — dark humour 😈\n` +
+      `• /dadjoke — corny dad joke 👨\n\n` +
       `*Image Commands:*\n` +
       `• /imagine <prompt> — generate an image\n` +
       `• /sticker <prompt> — generate a sticker\n\n` +
@@ -128,7 +132,6 @@ bot.command('start', async (ctx) => {
     )
   }
 
-  // Try to register as pending
   const result = await addPendingUser({ userId, username, firstName, languageCode })
 
   if (!result.ok) {
@@ -145,7 +148,6 @@ bot.command('start', async (ctx) => {
     { parse_mode: 'Markdown' }
   )
 
-  // Notify admin with inline buttons
   const userTag = username ? `@${username}` : firstName
   const keyboard = new InlineKeyboard()
     .text('✅ Approve', `approve:${userId}`)
@@ -403,9 +405,9 @@ bot.command('logs', async (ctx) => {
   return ctx.reply(`📋 *Recent Actions:*\n\n${list}`, { parse_mode: 'Markdown' })
 })
 
-// ─── Existing Commands ────────────────────────────────────────────────────────
+// ─── Commands ─────────────────────────────────────────────────────────────────
 
-bot.command('help', (ctx) => {
+bot.command('help', async (ctx) => {
   const userId = ctx.from?.id ?? 0
   const adminSection = isAdmin(userId)
     ? `\n\n*👑 Admin:*\n` +
@@ -418,7 +420,7 @@ bot.command('help', (ctx) => {
       `/logs — audit log\n`
     : ''
 
-  ctx.reply(
+  await ctx.reply(
     `*Available Commands:*\n\n` +
     `*AI:*\n` +
     `/search <query> — AI-powered search\n` +
@@ -432,6 +434,10 @@ bot.command('help', (ctx) => {
     `/persona — switch AI personality\n` +
     `/continue — continue last response\n` +
     `/clear — clear conversation memory\n\n` +
+    `*Humor:*\n` +
+    `/joke — random joke 😄\n` +
+    `/darkjoke — dark humour 😈\n` +
+    `/dadjoke — corny dad joke 👨\n\n` +
     `*Image:*\n` +
     `/imagine <prompt> — generate image\n` +
     `/sticker <prompt> — generate sticker\n\n` +
@@ -556,7 +562,7 @@ bot.command('quote', async (ctx) => {
 bot.command('persona', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const arg = ctx.match.trim().toLowerCase()
-  const userId = ctx.from?.id!
+  const userId = ctx.from?.id ?? 0 // FIX: was ctx.from?.id!
 
   if (!arg) {
     const current = await getPersona(userId)
@@ -572,12 +578,12 @@ bot.command('persona', async (ctx) => {
   }
 
   await setPersona(userId, arg)
-  ctx.reply(`🎭 Persona set to *${arg}*`, { parse_mode: 'Markdown' })
+  await ctx.reply(`🎭 Persona set to *${arg}*`, { parse_mode: 'Markdown' }) // FIX: added await
 })
 
 bot.command('continue', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  const userId = ctx.from?.id!
+  const userId = ctx.from?.id ?? 0 // FIX: was ctx.from?.id!
   const history = await getHistory(userId)
   if (history.length === 0) return ctx.reply('💭 No conversation history to continue.')
   const msg = await ctx.reply('💭 Continuing...')
@@ -593,14 +599,14 @@ bot.command('continue', async (ctx) => {
 
 bot.command('clear', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  await clearHistory(ctx.from?.id!)
-  ctx.reply('🗑️ Conversation memory cleared.')
+  await clearHistory(ctx.from?.id ?? 0) // FIX: was ctx.from?.id!
+  await ctx.reply('🗑️ Conversation memory cleared.') // FIX: added await
 })
 
 bot.command('model', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const arg = ctx.match.trim().toLowerCase()
-  const userId = ctx.from?.id!
+  const userId = ctx.from?.id ?? 0 // FIX: was ctx.from?.id!
 
   if (!arg) {
     const pref = await getUserProvider(userId)
@@ -647,8 +653,45 @@ bot.command('model', async (ctx) => {
     groq: '⚡ Groq (fastest)',
     pollinations: '🌸 Pollinations (no key needed)'
   }
-  ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' })
+  await ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`, { parse_mode: 'Markdown' }) // FIX: added await
 })
+
+// ─── Humor Commands ───────────────────────────────────────────────────────────
+
+bot.command('joke', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('😄 Generating joke...')
+  try {
+    const result = await chat('Tell me one funny, clean, original joke. Just the joke, no intro or explanation.', [], ctx.from?.id ?? 0)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😄 ${result}`, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('darkjoke', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('😈 Generating dark joke...')
+  try {
+    const result = await chat('Tell me one dark humour joke. Keep it edgy but not targeting real tragedies or specific groups. Just the joke, no intro.', [], ctx.from?.id ?? 0)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😈 ${result}`, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+bot.command('dadjoke', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const msg = await ctx.reply('👨 Generating dad joke...')
+  try {
+    const result = await chat('Tell me one classic corny dad joke with a punchline. Just the joke, no intro or explanation.', [], ctx.from?.id ?? 0)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `👨 ${result}`, { parse_mode: 'Markdown' })
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+  }
+})
+
+// ─── Image & Utility Commands ─────────────────────────────────────────────────
 
 bot.command('imagine', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
@@ -696,17 +739,16 @@ bot.command('qr', async (ctx) => {
   }
 })
 
+// FIX: replaced Function() eval with mathjs evaluate — safe math parser
 bot.command('calc', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const expr = ctx.match.trim()
   if (!expr) return ctx.reply('Usage: /calc <expression>\nExample: /calc 2 + 2 * 10')
   try {
-    const sanitized = expr.replace(/[^0-9+\-*/.() %]/g, '')
-    if (!sanitized) throw new Error('Invalid expression')
-    const result = Function(`"use strict"; return (${sanitized})`)()
-    ctx.reply(`🧮 \`${expr}\` = *${result}*`, { parse_mode: 'Markdown' })
+    const result = evaluate(expr)
+    await ctx.reply(`🧮 \`${expr}\` = *${result}*`, { parse_mode: 'Markdown' }) // FIX: added await
   } catch {
-    ctx.reply('❌ Invalid expression. Example: /calc 100 * 1.06')
+    await ctx.reply('❌ Invalid expression. Example: /calc 100 * 1.06') // FIX: added await
   }
 })
 
@@ -788,7 +830,6 @@ bot.on('message:text', async (ctx) => {
     await appendHistory(userId, 'user', text)
     await appendHistory(userId, 'assistant', result)
 
-    // Track usage + notify admin on first message
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
       await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`, { parse_mode: 'Markdown' })
