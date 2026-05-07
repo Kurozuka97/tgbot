@@ -12,7 +12,7 @@
     "grammy": "*",
     "next": "^14",
     "react": "*",
-    "react-dom": "*"
+    "react-dom": "*",
     "mathjs": "*"
   },
   "devDependencies": {
