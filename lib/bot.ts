@@ -52,6 +52,74 @@ function formatDate(ts?: number): string {
   return new Date(ts).toLocaleString('en-MY', { timeZone: 'Asia/Kuala_Lumpur' })
 }
 
+// ─── Smart Markdown Sanitizer ─────────────────────────────────────────────────
+// Preserves valid Telegram Markdown (*bold*, _italic_, `code`, ```block```)
+// Escapes only the chars that would cause Telegram 400 parse errors
+
+function sanitizeMd(text: string): string {
+  // Strip leaked tool call XML tags from any model
+  text = text.replace(/<[a-zA-Z_]+_tool_call>[\s\S]*?<\/[a-zA-Z_]+_tool_call>/g, '')
+  text = text.replace(/<[a-zA-Z_]+_arg_\w+>[\s\S]*?<\/[a-zA-Z_]+_arg_\w+>/g, '')
+  text = text.replace(/<\/?[a-zA-Z_]+(Tool|Call|Arg|Result)[^>]*>/g, '')
+
+  const lines = text.split('\n')
+  const result: string[] = []
+
+  for (const line of lines) {
+    // Skip processing inside code blocks — preserve as-is
+    result.push(sanitizeLine(line))
+  }
+
+  return result.join('\n').trim()
+}
+
+function sanitizeLine(line: string): string {
+  // Preserve ```code blocks``` and `inline code` — don't touch inside them
+  // Split line into segments: code vs non-code
+  const segments: { text: string; isCode: boolean }[] = []
+  const codeRegex = /(`{1,3})([\s\S]*?)\1/g
+  let last = 0
+  let match
+
+  while ((match = codeRegex.exec(line)) !== null) {
+    if (match.index > last) {
+      segments.push({ text: line.slice(last, match.index), isCode: false })
+    }
+    segments.push({ text: match[0], isCode: true })
+    last = match.index + match[0].length
+  }
+  if (last < line.length) {
+    segments.push({ text: line.slice(last), isCode: false })
+  }
+
+  return segments.map(seg => {
+    if (seg.isCode) return seg.text
+    return escapeNonFormatting(seg.text)
+  }).join('')
+}
+
+function escapeNonFormatting(text: string): string {
+  // Valid Telegram Markdown patterns to preserve:
+  // *bold* — asterisks wrapping a word/phrase (no space after opening, no space before closing)
+  // _italic_ — same rule
+  // [text](url) — links
+  // Escape bare _ that aren't wrapping italic (e.g. some_variable_name)
+  // Escape bare [ that aren't part of a link
+
+  // Escape _ that are NOT part of valid _italic_ wrapping
+  // Valid italic: _word_ or _multiple words_ — no space after _ opener, no space before _ closer
+  text = text.replace(/(?<![*_])_(?!\s)([^_]+?)(?<!\s)_(?![*_])/g, '§ITALIC§$1§ENDITALIC§')
+  text = text.replace(/_/g, '\\_')
+  text = text.replace(/§ITALIC§(.*?)§ENDITALIC§/g, '_$1_')
+
+  // Escape [ that are NOT part of a valid [text](url) link
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '§LINK§$1§SEP§$2§ENDLINK§')
+  text = text.replace(/\[/g, '\\[')
+  text = text.replace(/§LINK§(.*?)§SEP§(.*?)§ENDLINK§/g, '[$1]($2)')
+
+  return text
+}
+
 async function fetchFile(fileId: string): Promise<{ buffer: Buffer; mimeType: string }> {
   const file = await bot.api.getFile(fileId)
   const url = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`
@@ -137,7 +205,7 @@ bot.command('start', async (ctx) => {
       `*Inline Mode:*\n` +
       `• @botname <query> — AI anywhere\n` +
       `• @botname imagine <prompt> — generate image anywhere`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   }
 
@@ -154,7 +222,7 @@ bot.command('start', async (ctx) => {
     `👋 Hey *${firstName}*!\n\n` +
     `Your access request has been sent to the admin. ` +
     `You'll be notified once approved. ⏳`,
-    { }
+    { parse_mode: 'Markdown' }
   )
 
   const userTag = username ? `@${username}` : firstName
@@ -197,7 +265,7 @@ bot.callbackQuery(/^approve:(\d+)$/, async (ctx) => {
     await bot.api.sendMessage(
       targetId,
       `✅ Your access has been *approved!*\n\nSend /start to begin.`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   } catch {}
 
@@ -222,7 +290,7 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
     await bot.api.sendMessage(
       targetId,
       `❌ Your access request has been *rejected.*\n\nContact the admin if you think this is a mistake.`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   } catch {}
 
@@ -250,7 +318,7 @@ bot.callbackQuery(/^ban:(\d+)$/, async (ctx) => {
     await bot.api.sendMessage(
       targetId,
       `🚫 You have been *banned* from this bot.`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   } catch {}
 
@@ -310,7 +378,7 @@ bot.command('users', async (ctx) => {
 
   return ctx.reply(
     `👥 *Approved Users (${users.length}):*\n\n${list}`,
-    { }
+    { parse_mode: 'Markdown' }
   )
 })
 
@@ -469,7 +537,7 @@ bot.command('help', async (ctx) => {
     `@botname <query> — AI anywhere\n` +
     `@botname imagine <prompt> — image anywhere` +
     adminSection,
-    { }
+    { parse_mode: 'Markdown' }
   )
 })
 
@@ -480,7 +548,7 @@ bot.command('search', async (ctx) => {
   const msg = await ctx.reply('🔍 Searching...')
   try {
     const result = await chatWithSearch(query, ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Search failed: ${String(err)}`)
   }
@@ -493,7 +561,7 @@ bot.command('weather', async (ctx) => {
   const msg = await ctx.reply('🌤️ Checking weather...')
   try {
     const result = await chat(`What is the typical/current weather in ${city}? Provide temperature range (Celsius), humidity, wind, and general conditions. Format nicely with emojis. Note if data may not be real-time.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -523,7 +591,8 @@ bot.command('translate', async (ctx) => {
   const msg = await ctx.reply('🌐 Translating...')
   try {
     const result = await chat(`Translate the following text to ${targetLang}. Reply with only the translation, nothing else:\n\n${text}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 *${targetLang}:*\n${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 *${targetLang}:*
+${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -537,7 +606,8 @@ bot.command('summarize', async (ctx) => {
   try {
     const content = await fetchUrl(url)
     const result = await chat(`Summarize the following content in clear bullet points. Be concise:\n\n${content}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 *Summary:*\n${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 *Summary:*
+${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -550,7 +620,7 @@ bot.command('explain', async (ctx) => {
   const msg = await ctx.reply('🧠 Thinking...')
   try {
     const result = await chat(`Explain "${topic}" in simple terms that anyone can understand. Be concise and use examples.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -563,7 +633,7 @@ bot.command('roast', async (ctx) => {
   const msg = await ctx.reply('🔥 Roasting...')
   try {
     const result = await chat(`Give a funny, savage but lighthearted roast about: "${topic}". Keep it humorous, not mean-spirited. 3-5 sentences.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -574,7 +644,7 @@ bot.command('quote', async (ctx) => {
   const msg = await ctx.reply('✨ Generating quote...')
   try {
     const result = await chat('Generate one unique, powerful motivational quote. Format: "quote" — Author (or "Unknown"). Just the quote, nothing else.', [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `✨ ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `✨ ${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -590,7 +660,7 @@ bot.command('persona', async (ctx) => {
     const list = PERSONA_LIST.map(p => `• \`${p}\``).join('\n')
     return ctx.reply(
       `🎭 *Persona Settings*\n\nCurrent: \`${current}\`\n\n*Available:*\n${list}\n\nUsage: /persona <name>`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   }
 
@@ -612,7 +682,7 @@ bot.command('continue', async (ctx) => {
     const result = await chat('Continue from where you left off.', [], userId, history)
     await appendHistory(userId, 'user', 'Continue from where you left off.')
     await appendHistory(userId, 'assistant', result)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -638,7 +708,7 @@ bot.command('model', async (ctx) => {
       `• /model groq — force Groq only\n` +
       `• /model mistral — pick from list of models\n` +
       `• /model openrouter — pick from list of free models`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   }
 
@@ -648,7 +718,7 @@ bot.command('model', async (ctx) => {
     const list = modelList.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
       `🇫🇷 *Mistral Models:*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   }
 
@@ -658,7 +728,7 @@ bot.command('model', async (ctx) => {
     const list = models.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
       `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   }
 
@@ -682,7 +752,7 @@ bot.command('joke', async (ctx) => {
   const msg = await ctx.reply('😄 Generating joke...')
   try {
     const result = await chat('Tell me one funny, clean, original joke. Just the joke, no intro or explanation.', [], ctx.from?.id ?? 0)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😄 ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😄 ${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -693,7 +763,7 @@ bot.command('darkjoke', async (ctx) => {
   const msg = await ctx.reply('😈 Generating dark joke...')
   try {
     const result = await chat('Tell me one dark humour joke. Keep it edgy but not targeting real tragedies or specific groups. Just the joke, no intro.', [], ctx.from?.id ?? 0)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😈 ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `😈 ${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -704,7 +774,7 @@ bot.command('dadjoke', async (ctx) => {
   const msg = await ctx.reply('👨 Generating dad joke...')
   try {
     const result = await chat('Tell me one classic corny dad joke with a punchline. Just the joke, no intro or explanation.', [], ctx.from?.id ?? 0)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `👨 ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `👨 ${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -787,7 +857,7 @@ bot.on('message:photo', async (ctx) => {
     if (isFirst && !isAdmin(userId)) {
       await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`)
     }
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -807,7 +877,7 @@ bot.on('message:document', async (ctx) => {
     if (isFirst && !isAdmin(userId)) {
       await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`)
     }
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -854,7 +924,7 @@ bot.on('message:text', async (ctx) => {
       await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`)
     }
 
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Error: ${String(err)}`)
   }
@@ -917,7 +987,7 @@ bot.command('debate', async (ctx) => {
   const msg = await ctx.reply('⚖️ Preparing both sides...')
   try {
     const result = await chat(`Debate the topic: "${topic}". Present strong arguments FOR and AGAINST in a structured format. Label them clearly. Be balanced and thorough.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -930,7 +1000,7 @@ bot.command('story', async (ctx) => {
   const msg = await ctx.reply('📖 Writing story...')
   try {
     const result = await chat(`Write a short, engaging story based on this prompt: "${prompt}". Keep it under 300 words. Make it interesting with a clear beginning, middle, and end.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -943,7 +1013,7 @@ bot.command('code', async (ctx) => {
   const msg = await ctx.reply('💻 Generating code...')
   try {
     const result = await chat(`Generate clean, well-commented code for: "${desc}". Include a brief explanation of how it works.`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, sanitizeMd(result), { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -959,7 +1029,7 @@ bot.command('roastme', async (ctx) => {
     const { buffer, mimeType } = await fetchFile(photo.file_id)
     const part = fileToGenerativePart(buffer, mimeType)
     const result = await chat('Give a funny, savage but lighthearted roast based on what you see in this photo. Be creative and humorous, not cruel. Keep it to 3-5 sentences.', [part], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔥 ${sanitizeMd(result)}`, { parse_mode: 'Markdown' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -1031,7 +1101,7 @@ bot.command('currency', async (ctx) => {
     const result = (parseFloat(amount) * rate).toFixed(2)
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
       `💱 *${amount} ${from.toUpperCase()}* = *${result} ${to.toUpperCase()}*\n_Rate: 1 ${from.toUpperCase()} = ${rate} ${to.toUpperCase()}_`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
@@ -1054,7 +1124,7 @@ bot.command('time', async (ctx) => {
     const formatted = dt.toLocaleString('en-MY', { timeZone: match, dateStyle: 'full', timeStyle: 'short' })
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
       `🕐 *${match}*\n${formatted}`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
@@ -1069,7 +1139,7 @@ bot.command('encode', async (ctx) => {
   const url = encodeURIComponent(input)
   await ctx.reply(
     `🔐 *Encoded:*\n\n*Base64:*\n\`${b64}\`\n\n*URL:*\n\`${url}\``,
-    { }
+    { parse_mode: 'Markdown' }
   )
 })
 
@@ -1082,7 +1152,7 @@ bot.command('hash', async (ctx) => {
   const sha256 = createHash('sha256').update(input).digest('hex')
   await ctx.reply(
     `#️⃣ *Hashes:*\n\n*MD5:*\n\`${md5}\`\n\n*SHA256:*\n\`${sha256}\``,
-    { }
+    { parse_mode: 'Markdown' }
   )
 })
 
@@ -1103,7 +1173,7 @@ bot.command('broadcast', async (ctx) => {
   }
   await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
     `📡 *Broadcast complete*\n\n✅ Sent: ${success}\n❌ Failed: ${failed}`,
-    { }
+    { parse_mode: 'Markdown' }
   )
 })
 
@@ -1115,7 +1185,7 @@ bot.command('stats', async (ctx) => {
     const topList = topUsers.map((u, i) => `${i + 1}. ${u.tag} — ${u.count} msgs`).join('\n')
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
       `📊 *Bot Stats*\n\n👥 Total Users: *${totalUsers}*\n💬 Total Messages: *${totalMessages}*\n\n*🏆 Top 5 Users:*\n${topList}`,
-      { }
+      { parse_mode: 'Markdown' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
@@ -1131,7 +1201,7 @@ bot.command('maintenance', async (ctx) => {
     arg === 'on'
       ? '🔧 *Maintenance mode ON* — all non-admin users are blocked.'
       : '✅ *Maintenance mode OFF* — bot is back online.',
-    { }
+    { parse_mode: 'Markdown' }
   )
 })
 
