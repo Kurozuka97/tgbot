@@ -228,6 +228,53 @@ async function openrouterChat(messages: Message[], specificModel?: string): Prom
   return data.choices[0].message.content
 }
 
+// ─── AI Sanitizer ─────────────────────────────────────────────────────────────
+// Cleans AI response before sending to Telegram — fixes broken Markdown,
+// strips tool call leakage, preserves content and personality
+
+async function sanitizeWithAI(text: string): Promise<string> {
+  // Quick pre-check — if no Markdown chars present, skip the extra call
+  if (!/[*_`\[<]/.test(text)) return text
+
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a Telegram message formatter. Your ONLY job is to clean and fix text for Telegram's Markdown parser.
+
+Rules:
+- Remove any XML tool call tags like <tool_call>, <arg_key>, <longcat_tool_call> etc completely
+- Fix unclosed *bold*, _italic_, \`code\` formatting — either close them or remove the opening marker
+- Escape bare asterisks that are NOT bold formatting (e.g. math like 3 * 4) with a backslash: 3 \\* 4
+- Escape bare underscores that are NOT italic formatting (e.g. variable_name) with a backslash: variable\\_name
+- Escape bare square brackets [ that are NOT part of a [link](url) with a backslash: \\[
+- Preserve the original language, tone, personality and content exactly — do NOT rephrase or translate
+- Return ONLY the cleaned text, no explanations, no preamble`
+          },
+          {
+            role: 'user',
+            content: text
+          }
+        ]
+      })
+    })
+    if (!res.ok) return text
+    const data = await res.json()
+    return data.choices?.[0]?.message?.content ?? text
+  } catch {
+    return text
+  }
+}
+
 // ─── User model preference (Firestore) ───────────────────────────────────────
 export async function getUserProvider(userId: number): Promise<{ provider: string; model?: string }> {
   try {
@@ -271,8 +318,8 @@ export async function chat(
 
   // Vision request
   if (imageParts.length > 0) {
-    try { return await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt) } catch {}
-    try { return await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt) } catch {}
+    try { return await sanitizeWithAI(await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
+    try { return await sanitizeWithAI(await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
     const visionMessages: Message[] = [
       { role: 'system', content: systemPrompt },
       ...history,
@@ -284,7 +331,7 @@ export async function chat(
         ]
       }
     ]
-    try { return await openrouterChat(visionMessages) } catch {}
+    try { return await sanitizeWithAI(await openrouterChat(visionMessages)) } catch {}
     return '❌ Image analysis unavailable right now.'
   }
 
@@ -295,16 +342,16 @@ export async function chat(
   ]
 
   if (provider === 'groq') {
-    try { return await groqChat(messages) } catch {}
+    try { return await sanitizeWithAI(await groqChat(messages)) } catch {}
     return '❌ Groq unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'mistral') {
     const mistralModel = specificModel ? MISTRAL_MODELS[specificModel] ?? specificModel : 'mistral-small-latest'
-    try { return await mistralChat(messages, mistralModel) } catch {}
+    try { return await sanitizeWithAI(await mistralChat(messages, mistralModel)) } catch {}
     return '❌ Mistral unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'openrouter') {
-    try { return await openrouterChat(messages, specificModel) } catch {}
+    try { return await sanitizeWithAI(await openrouterChat(messages, specificModel)) } catch {}
     return '❌ OpenRouter unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'pollinations') {
@@ -312,9 +359,9 @@ export async function chat(
   }
 
   // Auto fallback chain — text only, no pollinations
-  try { return await groqChat(messages) } catch {}
-  try { return await mistralChat(messages) } catch {}
-  try { return await openrouterChat(messages) } catch {}
+  try { return await sanitizeWithAI(await groqChat(messages)) } catch {}
+  try { return await sanitizeWithAI(await mistralChat(messages)) } catch {}
+  try { return await sanitizeWithAI(await openrouterChat(messages)) } catch {}
   return '❌ All AI providers unavailable. Try again later.'
 }
 
