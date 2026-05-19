@@ -3,7 +3,7 @@ import { Bot, InputFile, InlineKeyboard } from 'grammy'
 import { evaluate } from 'mathjs'
 import {
   chat, chatWithSearch, fileToGenerativePart,
-  getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS,
+  getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS, GEMINI_MODELS,
   getHistory, appendHistory, clearHistory,
   getPersona, setPersona, PERSONA_LIST
 } from './ai'
@@ -39,6 +39,7 @@ async function isAllowed(userId: number): Promise<boolean> {
 
 const pendingModelSelection = new Map<number, string[]>()
 const pendingMistralSelection = new Map<number, boolean>()
+const pendingGeminiSelection = new Map<number, boolean>()
 
 function formatDuration(ms: number): string {
   const h = Math.floor(ms / 3600000)
@@ -636,10 +637,11 @@ bot.command('model', async (ctx) => {
     const current = pref.model ? `${pref.provider} → \`${pref.model}\`` : `\`${pref.provider}\``
     return ctx.reply(
       `🤖 *AI Provider Settings*\n\nCurrent: ${current}\n\n*Options:*\n` +
-      `• /model auto — smart fallback (Groq → Mistral → OpenRouter)\n` +
+      `• /model auto — smart fallback (Groq → Mistral → OpenRouter → Gemini)\n` +
       `• /model groq — force Groq only\n` +
-      `• /model mistral — pick from list of models\n` +
-      `• /model openrouter — pick from list of free models`,
+      `• /model mistral — pick Mistral model\n` +
+      `• /model gemini — pick Gemini model\n` +
+      `• /model openrouter — pick from free OpenRouter models`,
       { parse_mode: 'Markdown' }
     )
   }
@@ -650,6 +652,16 @@ bot.command('model', async (ctx) => {
     const list = modelList.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
       `🇫🇷 *Mistral Models:*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
+      { parse_mode: 'Markdown' }
+    )
+  }
+
+  if (arg === 'gemini') {
+    const modelList = Object.keys(GEMINI_MODELS)
+    pendingGeminiSelection.set(userId, true)
+    const list = modelList.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
+    return ctx.reply(
+      `🌟 *Gemini Models:*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
       { parse_mode: 'Markdown' }
     )
   }
@@ -665,16 +677,17 @@ bot.command('model', async (ctx) => {
   }
 
   const valid = ['auto', 'groq']
-  if (!valid.includes(arg)) return ctx.reply(`❌ Invalid option. Choose: auto, groq, mistral, openrouter`)
+  if (!valid.includes(arg)) return ctx.reply(`❌ Invalid option. Choose: auto, groq, mistral, gemini, openrouter`)
 
   pendingModelSelection.delete(userId)
   pendingMistralSelection.delete(userId)
+  pendingGeminiSelection.delete(userId)
   await setUserProvider(userId, arg)
   const labels: Record<string, string> = {
     auto: '🔄 Auto fallback (recommended)',
     groq: '⚡ Groq (fastest)',
   }
-  await ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`) // FIX: added await
+  await ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`)
 })
 
 // ─── Humor Commands ───────────────────────────────────────────────────────────
@@ -830,6 +843,18 @@ bot.on('message:text', async (ctx) => {
     pendingMistralSelection.delete(userId)
     await setUserProvider(userId, 'mistral', selected)
     return ctx.reply(`✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`)
+  }
+
+  if (pendingGeminiSelection.has(userId)) {
+    const modelList = Object.keys(GEMINI_MODELS)
+    const num = parseInt(text.trim())
+    if (isNaN(num) || num < 1 || num > modelList.length) {
+      return ctx.reply(`❌ Invalid. Pick 1–${modelList.length}, or /model auto to cancel.`)
+    }
+    const selected = modelList[num - 1]
+    pendingGeminiSelection.delete(userId)
+    await setUserProvider(userId, 'gemini', selected)
+    return ctx.reply(`✅ *Gemini model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`)
   }
 
   if (pendingModelSelection.has(userId)) {
