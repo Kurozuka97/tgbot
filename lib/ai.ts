@@ -1,5 +1,5 @@
 // Multi-AI provider with automatic fallback
-// Priority: Groq → Mistral → OpenRouter → Gemini
+// Priority: Groq → Mistral → OpenRouter (rotate free models)
 
 import { db } from './firebase'
 
@@ -254,115 +254,11 @@ async function openrouterChat(messages: Message[], specificModel?: string): Prom
   return data.choices[0].message.content
 }
 
-// ─── Gemini ───────────────────────────────────────────────────────────────────
-
-export const GEMINI_MODELS: Record<string, string> = {
-  'gemini-2.0-flash':      'gemini-2.0-flash',
-  'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite',
-  'gemini-1.5-flash':      'gemini-1.5-flash',
-  'gemini-1.5-flash-8b':   'gemini-1.5-flash-8b',
-  'gemini-1.5-pro':        'gemini-1.5-pro',
-}
-
-// Convert OpenAI-style messages array → Gemini contents format
-function toGeminiContents(messages: Message[]): { systemInstruction?: any; contents: any[] } {
-  const systemMsg = messages.find(m => m.role === 'system')
-  const rest = messages.filter(m => m.role !== 'system')
-
-  const contents = rest.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }]
-  }))
-
-  // Gemini requires strictly alternating user/model turns — merge consecutive same roles
-  const deduped: any[] = []
-  for (const c of contents) {
-    if (deduped.length > 0 && deduped[deduped.length - 1].role === c.role) {
-      deduped[deduped.length - 1].parts[0].text += '\n' + c.parts[0].text
-    } else {
-      deduped.push(c)
-    }
-  }
-
-  // Must start with a user turn
-  if (deduped.length > 0 && deduped[0].role === 'model') {
-    deduped.shift()
-  }
-
-  return {
-    systemInstruction: systemMsg
-      ? { parts: [{ text: systemMsg.content }] }
-      : undefined,
-    contents: deduped
-  }
-}
-
-async function geminiChat(messages: Message[], model = 'gemini-2.0-flash'): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) throw new Error('Gemini: no API key')
-
-  const { systemInstruction, contents } = toGeminiContents(messages)
-  if (contents.length === 0) throw new Error('Gemini: empty contents')
-
-  const body: any = {
-    contents,
-    generationConfig: { maxOutputTokens: 1024 }
-  }
-  if (systemInstruction) body.systemInstruction = systemInstruction
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }
-  )
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Gemini: ${res.status} — ${err}`)
-  }
-  const data = await res.json()
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
-  if (!text) throw new Error('Gemini: empty response')
-  return text
-}
-
-async function geminiVision(prompt: string, imageData: string, mimeType: string, systemPrompt: string): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) throw new Error('Gemini Vision: no API key')
-
-  const body: any = {
-    systemInstruction: { parts: [{ text: systemPrompt }] },
-    contents: [{
-      role: 'user',
-      parts: [
-        { inline_data: { mime_type: mimeType, data: imageData } },
-        { text: prompt }
-      ]
-    }],
-    generationConfig: { maxOutputTokens: 1024 }
-  }
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }
-  )
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Gemini Vision: ${res.status} — ${err}`)
-  }
-  const data = await res.json()
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
-  if (!text) throw new Error('Gemini Vision: empty response')
-  return text
-}
-
 // ─── HTML Sanitizer ───────────────────────────────────────────────────────────
+// Strips any leaked XML/tool-call tags from AI output, then escapes bare
+// & < > that are NOT part of allowed Telegram HTML tags so the message
+// never triggers a Telegram parse error.
+
 function sanitizeWithAI(text: string): Promise<string> {
   return Promise.resolve(sanitizeHTML(text))
 }
@@ -370,18 +266,29 @@ function sanitizeWithAI(text: string): Promise<string> {
 function sanitizeHTML(text: string): string {
   const allowed = new Set(['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler'])
 
+  // 0. Strip MarkdownV2 backslash escapes that models sometimes output (e.g. \. \! \- \#)
   text = text.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, '$1')
+
+  // 1. Convert Markdown code blocks FIRST (before other replacements)
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`)
+
+  // 2. Convert inline code
   text = text.replace(/`([^`\n]+)`/g, (_, code) => `<code>${escapeHTMLEntities(code)}</code>`)
+
+  // 3. Convert remaining Markdown formatting
   text = text
     .replace(/\*\*\*(.*?)\*\*\*/g, '<b><i>$1</i></b>')
     .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
     .replace(/__(.*?)__/g, '<b>$1</b>')
     .replace(/\*(.*?)\*/g, '<i>$1</i>')
     .replace(/_(.*?)_/g, '<i>$1</i>')
-  text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?>/, (match, tag: string) => {
+
+  // 4. Strip any disallowed HTML tags (e.g. leaked <tool_call>, <div>, etc.) but keep content
+  text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?>/g, (match, tag: string) => {
     return allowed.has(tag.toLowerCase()) ? match : ''
   })
+
+  // 5. Strip Markdown headers (### Heading → just the text, bolded)
   text = text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
 
   return text.trim()
@@ -429,6 +336,8 @@ export async function chat(
   const persona = userId ? await getPersona(userId) : 'default'
   const systemPrompt = getSystemPrompt(persona)
 
+  // Inject persona reminder into user message for non-default personas
+  // This forces weaker models to stay in character
   const userContent = persona !== 'default'
     ? `[System reminder: you are the ${persona} persona. Stay in character for this entire response.]\n\n${prompt}`
     : prompt
@@ -437,7 +346,6 @@ export async function chat(
   if (imageParts.length > 0) {
     try { return await sanitizeWithAI(await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
     try { return await sanitizeWithAI(await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
-    try { return await sanitizeWithAI(await geminiVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
     const visionMessages: Message[] = [
       { role: 'system', content: systemPrompt },
       ...history,
@@ -472,21 +380,14 @@ export async function chat(
     try { return await sanitizeWithAI(await openrouterChat(messages, specificModel)) } catch {}
     return '❌ OpenRouter unavailable. Try /model auto to use fallback.'
   }
-  if (provider === 'gemini') {
-    const geminiModel = specificModel && GEMINI_MODELS[specificModel] ? specificModel : 'gemini-2.0-flash'
-    try { return await sanitizeWithAI(await geminiChat(messages, geminiModel)) } catch (e) {
-      return `❌ Gemini error: ${String(e)}`
-    }
-  }
   if (provider === 'pollinations') {
     return '❌ Pollinations is for image generation only. Use /model auto instead.'
   }
 
-  // Auto fallback chain: Groq → Mistral → OpenRouter → Gemini
+  // Auto fallback chain — text only, no pollinations
   try { return await sanitizeWithAI(await groqChat(messages)) } catch {}
   try { return await sanitizeWithAI(await mistralChat(messages)) } catch {}
   try { return await sanitizeWithAI(await openrouterChat(messages)) } catch {}
-  try { return await sanitizeWithAI(await geminiChat(messages)) } catch {}
   return '❌ All AI providers unavailable. Try again later.'
 }
 
