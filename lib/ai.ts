@@ -474,8 +474,9 @@ export async function chat(
   }
   if (provider === 'gemini') {
     const geminiModel = specificModel && GEMINI_MODELS[specificModel] ? specificModel : 'gemini-2.0-flash'
-    try { return await sanitizeWithAI(await geminiChat(messages, geminiModel)) } catch {}
-    return '❌ Gemini unavailable. Try /model auto to use fallback.'
+    try { return await sanitizeWithAI(await geminiChat(messages, geminiModel)) } catch (e) {
+      return `❌ Gemini error: ${String(e)}`
+    }
   }
   if (provider === 'pollinations') {
     return '❌ Pollinations is for image generation only. Use /model auto instead.'
