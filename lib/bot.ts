@@ -339,10 +339,10 @@ bot.command('allow', async (ctx) => {
   await logAudit({ action: 'approve', adminId: ADMIN_ID, targetId, targetUsername: pending?.username, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `✅ Your access has been *approved!*\n\nSend /start to begin.`)
+    await bot.api.sendMessage(targetId, `✅ Your access has been *approved!*\n\nSend /start to begin.`, { parse_mode: 'Markdown' })
   } catch {}
 
-  return ctx.reply(`✅ User \`${targetId}\` approved.`)
+  return ctx.reply(`✅ User \`${targetId}\` approved.`, { parse_mode: 'Markdown' })
 })
 
 bot.command('revoke', async (ctx) => {
@@ -358,10 +358,10 @@ bot.command('revoke', async (ctx) => {
   await logAudit({ action: 'revoke', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `⚠️ Your bot access has been *revoked.*`)
+    await bot.api.sendMessage(targetId, `⚠️ Your bot access has been *revoked.*`, { parse_mode: 'Markdown' })
   } catch {}
 
-  return ctx.reply(`🔒 User \`${targetId}\` revoked.`)
+  return ctx.reply(`🔒 User \`${targetId}\` revoked.`, { parse_mode: 'Markdown' })
 })
 
 bot.command('ban', async (ctx) => {
@@ -378,10 +378,10 @@ bot.command('ban', async (ctx) => {
   await logAudit({ action: 'ban', adminId: ADMIN_ID, targetId, targetUsername: record?.username, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `🚫 You have been *banned* from this bot.`)
+    await bot.api.sendMessage(targetId, `🚫 You have been *banned* from this bot.`, { parse_mode: 'Markdown' })
   } catch {}
 
-  return ctx.reply(`🚫 User \`${targetId}\` banned permanently.`)
+  return ctx.reply(`🚫 User \`${targetId}\` banned permanently.`, { parse_mode: 'Markdown' })
 })
 
 bot.command('unban', async (ctx) => {
@@ -396,7 +396,7 @@ bot.command('unban', async (ctx) => {
   await unbanUser(targetId)
   await logAudit({ action: 'unban', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
 
-  return ctx.reply(`✅ User \`${targetId}\` unbanned. They can request access again.`)
+  return ctx.reply(`✅ User \`${targetId}\` unbanned. They can request access again.`, { parse_mode: 'Markdown' })
 })
 
 bot.command('logs', async (ctx) => {
@@ -417,7 +417,7 @@ bot.command('logs', async (ctx) => {
     return `${icon} ${l.action} → ${target}\n  ${time}`
   }).join('\n\n')
 
-  return ctx.reply(`📋 *Recent Actions:*\n\n${list}`)
+  return ctx.reply(`📋 *Recent Actions:*\n\n${list}`, { parse_mode: 'Markdown' })
 })
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -529,8 +529,7 @@ bot.command('translate', async (ctx) => {
   const msg = await ctx.reply('🌐 Translating...')
   try {
     const result = await chat(`Translate the following text to ${targetLang}. Reply with only the translation, nothing else:\n\n${text}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 *${targetLang}:*
-${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🌐 <b>${targetLang}:</b>\n${result}`, { parse_mode: 'HTML' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -544,8 +543,7 @@ bot.command('summarize', async (ctx) => {
   try {
     const content = await fetchUrl(url)
     const result = await chat(`Summarize the following content in clear bullet points. Be concise:\n\n${content}`, [], ctx.from?.id)
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 *Summary:*
-${result}`)
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📄 <b>Summary:</b>\n${result}`, { parse_mode: 'HTML' })
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
@@ -724,14 +722,12 @@ bot.command('sticker', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const prompt = ctx.match.trim()
   if (!prompt) return ctx.reply('Usage: /sticker <prompt>')
-  const msg = await ctx.reply('🎭 Generating sticker...')
   try {
     const stickerPrompt = `${prompt}, sticker art style, bold outlines, vibrant colors, white background, cute kawaii style`
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(stickerPrompt)}?width=512&height=512&nologo=true&seed=${Date.now()}`
-    await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
     await ctx.replyWithPhoto(url, { caption: `🎭 ${prompt}` })
   } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+    await ctx.reply(`❌ Failed: ${String(err)}`)
   }
 })
 
@@ -748,7 +744,7 @@ bot.command('qr', async (ctx) => {
     await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
     await ctx.replyWithPhoto(new InputFile(buffer, 'qr.png'), { caption: `📱 QR Code for: ${text}` })
   } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+    try { await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`) } catch { await ctx.reply(`❌ Failed: ${String(err)}`) }
   }
 })
 
@@ -759,7 +755,7 @@ bot.command('calc', async (ctx) => {
   if (!expr) return ctx.reply('Usage: /calc <expression>\nExample: /calc 2 + 2 * 10')
   try {
     const result = evaluate(expr)
-    await ctx.reply(`🧮 \`${expr}\` = *${result}*`) // FIX: added await
+    await ctx.reply(`🧮 \`${expr}\` = *${result}*`, { parse_mode: 'Markdown' })
   } catch {
     await ctx.reply('❌ Invalid expression. Example: /calc 100 * 1.06') // FIX: added await
   }
@@ -821,7 +817,7 @@ bot.on('message:text', async (ctx) => {
     const selected = modelList[num - 1]
     pendingMistralSelection.delete(userId)
     await setUserProvider(userId, 'mistral', selected)
-    return ctx.reply(`✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`)
+    return ctx.reply(`✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'Markdown' })
   }
 
   if (pendingModelSelection.has(userId)) {
@@ -833,7 +829,7 @@ bot.on('message:text', async (ctx) => {
     const selected = models[num - 1]
     pendingModelSelection.delete(userId)
     await setUserProvider(userId, 'openrouter', selected)
-    return ctx.reply(`✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`)
+    return ctx.reply(`✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'Markdown' })
   }
 
   const msg = await ctx.reply('💭 Thinking...')
@@ -986,7 +982,7 @@ bot.command('imagine', async (ctx) => {
   for (const [flag, style] of Object.entries(styleMap)) {
     if (prompt.includes(flag)) {
       prompt = prompt.replace(flag, '').trim() + ', ' + style
-      styleLabel = ` _(${flag.replace('--', '')})_`
+      styleLabel = ` (${flag.replace('--', '')})`
       break
     }
   }
@@ -997,7 +993,7 @@ bot.command('imagine', async (ctx) => {
     await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
     await ctx.replyWithPhoto(url, { caption: `🎨 ${ctx.match.trim()}${styleLabel}` })
   } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+    try { await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`) } catch { await ctx.reply(`❌ Failed: ${String(err)}`) }
   }
 })
 

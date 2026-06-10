@@ -10,7 +10,7 @@ FORMATTING RULES (mandatory — never break these):
 - <b>bold</b> for key terms, important words, section headers.
 - <code>code</code> for inline code, commands, filenames, variables.
 - <pre>code block</pre> for multi-line code — always use this for code snippets.
-- Do NOT use <i>, <u>, or <s> tags — they will be stripped and make output look messy.
+- Do NOT use <i>, <u>, <s>, <em> tags — they will be stripped and make output look messy.
 - Plain & must be written as &amp;, plain < as &lt;, plain > as &gt;.
 - Keep responses concise and scannable. Use short paragraphs.
 - Never start with filler like "Certainly!", "Of course!", "Sure!", "Great question!".
@@ -268,34 +268,46 @@ function sanitizeWithAI(text: string): Promise<string> {
 function sanitizeHTML(text: string): string {
   const allowed = new Set(['b', 'code', 'pre', 'a', 'tg-spoiler']);
 
-  // 0. Strip MarkdownV2 backslash escapes that models sometimes output (e.g. \\. \! \- \#)
+  // 0. Strip MarkdownV2 backslash escapes that models sometimes output
   text = text.replace(/\\([_*[\]()]~`>#+\-=|{}.!\\])/g, '$1');
 
-  // 0.5 Explicitly strip <i>, <u>, <s>, <em> tags (keep inner content)
-  //     Models frequently overuse these, making output look messy
-  text = text.replace(/<\/?(i|u|s|em)[^>]*>/gi, '');
-
-  // 1. Convert Markdown code blocks FIRST (before other replacements)
+  // 1. Convert Markdown code blocks FIRST, and escape their content
+  //    This extracts code into <pre> blocks so later steps skip them
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`);
 
-  // 2. Convert inline code
+  // 2. Convert inline code — escape content inside
   text = text.replace(/`([^`\n]+)`/g, (_, code) => `<code>${escapeHTMLEntities(code)}</code>`);
 
-  // 3. Convert remaining Markdown formatting
-  text = text
-    .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
-    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-    .replace(/__(.*?)__/g, '<b>$1</b>');
+  // 3. Strip <i>, <u>, <s>, <em> tags with word boundary (keep inner content)
+  //    Using \b prevents over-matching tags like <span>, <strong>, <img>
+  text = text.replace(/<\/?(i|u|s|em)\b[^>]*>/gi, '');
 
-  // 4. Strip any disallowed HTML tags but keep content
+  // 4. Convert remaining Markdown formatting ONLY outside <pre>/<code> blocks
+  //    Protect content inside <pre>...</pre> and <code>...</code> from conversion
+  const parts = text.split(/(<\/?(?:pre|code)>)/gi)
+  text = parts.map((part, idx) => {
+    // Even indices are content, odd are <pre>/<code> tag boundaries
+    // Skip conversion inside pre/code blocks
+    if (idx % 2 === 1) return part
+    // Check if we're inside a <pre> or <code> block by tracking open/close
+    return part
+      .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
+      .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+      .replace(/__(.*?)__/g, '<b>$1</b>')
+  }).join('')
+
+  // 5. Strip any disallowed HTML tags but keep content
   text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?\>/g, (match, tag: string) => {
     return allowed.has(tag.toLowerCase()) ? match : ''
   });
 
-  // 5. Remove all attributes from allowed opening tags (Telegram only allows bare tags)
-  text = text.replace(/<(b|code|pre|a|tg-spoiler)(\s[^>]*)?>/gi, '<$1>');
+  // 6. Remove attributes from allowed tags, EXCEPT href on <a>
+  //    Telegram requires href on <a> for links to work
+  text = text.replace(/<(b|code|pre|tg-spoiler)(\s[^>]*)?>/gi, '<$1>');
+  text = text.replace(/<a\s+href="([^"]*)"[^>]*>/gi, '<a href="$1">');
 
-  // 6. Strip Markdown headers (### Heading → just the text, bolded)
+  // 7. Strip Markdown headers (### Heading → bold text)
+  //    Only outside <pre> blocks
   text = text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
 
   return text.trim();

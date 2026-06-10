@@ -18,11 +18,14 @@ export interface UserRecord {
   userId: number
   username?: string
   firstName?: string
-  status: 'approved' | 'banned'
+  status: 'approved' | 'banned' | 'revoked' | 'unbanned'
   approvedAt?: number
   approvedBy?: number
   bannedAt?: number
   bannedBy?: number
+  revokedAt?: number
+  revokedBy?: number
+  unbannedAt?: number
   messageCount: number
   lastActive?: number
   firstActiveAt?: number
@@ -67,20 +70,6 @@ export async function isUserAllowed(userId: number): Promise<boolean> {
   return ids.includes(userId)
 }
 
-async function addToAllowedList(userId: number) {
-  await db.collection('config').doc('allowed_users').set(
-    { ids: admin.firestore.FieldValue.arrayUnion(userId) },
-    { merge: true }
-  )
-}
-
-async function removeFromAllowedList(userId: number) {
-  await db.collection('config').doc('allowed_users').set(
-    { ids: admin.firestore.FieldValue.arrayRemove(userId) },
-    { merge: true }
-  )
-}
-
 // ─── User Registry ────────────────────────────────────────────────────────────
 
 export async function getApprovedUsers(): Promise<UserRecord[]> {
@@ -102,28 +91,33 @@ export async function approveUser(
   info: { username?: string; firstName?: string; languageCode?: string }
 ): Promise<void> {
   const now = Date.now()
-  await db.collection('users').doc(String(userId)).set({
+  const userUpdate: Record<string, any> = {
     userId,
-    username: info.username ?? null,
-    firstName: info.firstName ?? null,
-    languageCode: info.languageCode ?? null,
     status: 'approved',
     approvedAt: now,
-    approvedBy: adminId,
-    messageCount: 0,
-    lastActive: null,
-    firstActiveAt: null
-  }, { merge: true })
+    approvedBy: adminId
+  }
+  if (info.username) userUpdate.username = info.username
+  if (info.firstName) userUpdate.firstName = info.firstName
+  if (info.languageCode) userUpdate.languageCode = info.languageCode
 
-  await addToAllowedList(userId)
+  const batch = db.batch()
+  batch.set(db.collection('users').doc(String(userId)), userUpdate, { merge: true })
+  batch.set(db.collection('config').doc('allowed_users'), {
+    ids: admin.firestore.FieldValue.arrayUnion(userId)
+  }, { merge: true })
+  await batch.commit()
 }
 
 export async function revokeUser(userId: number, adminId: number): Promise<void> {
-  await db.collection('users').doc(String(userId)).set(
-    { status: 'revoked', revokedAt: Date.now(), revokedBy: adminId },
-    { merge: true }
-  )
-  await removeFromAllowedList(userId)
+  const batch = db.batch()
+  batch.set(db.collection('users').doc(String(userId)), {
+    status: 'revoked', revokedAt: Date.now(), revokedBy: adminId
+  }, { merge: true })
+  batch.set(db.collection('config').doc('allowed_users'), {
+    ids: admin.firestore.FieldValue.arrayRemove(userId)
+  }, { merge: true })
+  await batch.commit()
 }
 
 // ─── Ban System ───────────────────────────────────────────────────────────────
@@ -134,33 +128,36 @@ export async function banUser(
   info: { username?: string; firstName?: string }
 ): Promise<void> {
   const now = Date.now()
-  await db.collection('users').doc(String(userId)).set({
+  const userUpdate: Record<string, any> = {
     userId,
-    username: info.username ?? null,
-    firstName: info.firstName ?? null,
     status: 'banned',
     bannedAt: now,
-    bannedBy: adminId,
-    messageCount: 0
-  }, { merge: true })
+    bannedBy: adminId
+  }
+  if (info.username) userUpdate.username = info.username
+  if (info.firstName) userUpdate.firstName = info.firstName
 
-  await db.collection('config').doc('banned_users').set(
-    { ids: admin.firestore.FieldValue.arrayUnion(userId) },
-    { merge: true }
-  )
-  await removeFromAllowedList(userId)
-  await removePendingUser(userId)
+  const batch = db.batch()
+  batch.set(db.collection('users').doc(String(userId)), userUpdate, { merge: true })
+  batch.set(db.collection('config').doc('banned_users'), {
+    ids: admin.firestore.FieldValue.arrayUnion(userId)
+  }, { merge: true })
+  batch.set(db.collection('config').doc('allowed_users'), {
+    ids: admin.firestore.FieldValue.arrayRemove(userId)
+  }, { merge: true })
+  batch.delete(db.collection('pending_users').doc(String(userId)))
+  await batch.commit()
 }
 
 export async function unbanUser(userId: number): Promise<void> {
-  await db.collection('users').doc(String(userId)).set(
-    { status: 'unbanned', unbannedAt: Date.now() },
-    { merge: true }
-  )
-  await db.collection('config').doc('banned_users').set(
-    { ids: admin.firestore.FieldValue.arrayRemove(userId) },
-    { merge: true }
-  )
+  const batch = db.batch()
+  batch.set(db.collection('users').doc(String(userId)), {
+    status: 'unbanned', unbannedAt: Date.now()
+  }, { merge: true })
+  batch.set(db.collection('config').doc('banned_users'), {
+    ids: admin.firestore.FieldValue.arrayRemove(userId)
+  }, { merge: true })
+  await batch.commit()
 }
 
 export async function isUserBanned(userId: number): Promise<boolean> {
