@@ -8,9 +8,9 @@ const HTML_FORMAT_RULE = `
 FORMATTING RULES (mandatory — never break these):
 - Use Telegram HTML only. Never use Markdown (**bold**, _italic_, \`code\`, ##heading).
 - <b>bold</b> for key terms, important words, section headers.
-- <i>italic</i> for emphasis, definitions, or side notes.
 - <code>code</code> for inline code, commands, filenames, variables.
 - <pre>code block</pre> for multi-line code — always use this for code snippets.
+- Do NOT use <i>, <u>, or <s> tags — they will be stripped and make output look messy.
 - Plain & must be written as &amp;, plain < as &lt;, plain > as &gt;.
 - Keep responses concise and scannable. Use short paragraphs.
 - Never start with filler like "Certainly!", "Of course!", "Sure!", "Great question!".
@@ -266,7 +266,7 @@ function sanitizeWithAI(text: string): Promise<string> {
 }
 
 function sanitizeHTML(text: string): string {
-  const allowed = new Set(['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler']);
+  const allowed = new Set(['b', 'code', 'pre', 'a', 'tg-spoiler']);
 
   // 0. Strip MarkdownV2 backslash escapes that models sometimes output (e.g. \\. \! \- \#)
   text = text.replace(/\\([_*[\]()]~`>#+\-=|{}.!\\])/g, '$1');
@@ -279,20 +279,17 @@ function sanitizeHTML(text: string): string {
 
   // 3. Convert remaining Markdown formatting
   text = text
-    .replace(/\*\*\*(.*?)\*\*\*/g, '<b><i>$1</i></b>')
+    .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
     .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-    .replace(/__(.*?)__/g, '<b>$1</b>')
-    .replace(/\*(.*?)\*/g, '<i>$1</i>')
-    .replace(/_(.*?)_/g, '<i>$1</i>');
+    .replace(/__(.*?)__/g, '<b>$1</b>');
 
   // 4. Strip any disallowed HTML tags but keep content
   text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?\>/g, (match, tag: string) => {
-    return allowed.has(tag.toLowerCase()) ? match : '';
+    return allowed.has(tag.toLowerCase()) ? match : ''
   });
 
   // 5. Remove all attributes from allowed opening tags (Telegram only allows bare tags)
-  //    This also covers stray spaces like "<b >" which Telegram treats as an empty attribute.
-  text = text.replace(/<(b|i|u|s|code|pre|a|tg-spoiler)(\s[^>]*)?>/gi, '<$1>');
+  text = text.replace(/<(b|code|pre|a|tg-spoiler)(\s[^>]*)?>/gi, '<$1>');
 
   // 6. Strip Markdown headers (### Heading → just the text, bolded)
   text = text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');

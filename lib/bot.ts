@@ -891,7 +891,7 @@ bot.on('inline_query', async (ctx) => {
       type: 'article',
       id: '1',
       title: query.slice(0, 60),
-      input_message_content: { message_text: result },
+      input_message_content: { message_text: result, parse_mode: 'HTML' },
       description: result.slice(0, 100)
     }], { cache_time: 0 })
   } catch {
