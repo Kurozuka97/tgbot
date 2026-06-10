@@ -858,7 +858,9 @@ bot.on('message:text', async (ctx) => {
 // ─── Inline Query ─────────────────────────────────────────────────────────────
 
 bot.on('inline_query', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) {
+  const userId = ctx.from?.id ?? 0
+
+  if (!await isAllowed(userId)) {
     return ctx.answerInlineQuery([{
       type: 'article',
       id: 'lock',
@@ -894,7 +896,8 @@ bot.on('inline_query', async (ctx) => {
       }], { cache_time: 0 })
     }
 
-    const result = await chat(prompt, [], ctx.from.id)
+    const history = await getHistory(userId)
+    const result = await chat(prompt, [], userId, history)
     return ctx.answerInlineQuery([{
       type: 'article',
       id: '1',

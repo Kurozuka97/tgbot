@@ -59,18 +59,37 @@ text = text.replace(/`([^`\n]+)`/g, (_, code) =>
 - `# This is a comment` inside `<pre>` becomes `<b>This is a comment</b>` inside `<pre>` — invalid Telegram HTML, message fails to send
 - `**important** variable` inside `<pre>` becomes `<b>important</b> variable` — invalid nesting
 
-**Fix:** Split the text on `<pre>/<code>` boundaries and only convert Markdown in the outside segments:
+**Fix:** Split on `<pre>/<code>` boundaries and **track open/close state** — NOT naive "even/odd index" logic:
 ```js
-const parts = text.split(/(<\/?(?:pre|code)>)/gi)
-text = parts.map((part, idx) => {
-  if (idx % 2 === 1) return part // tag boundary, skip
-  return part
-    .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
-    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-    .replace(/__(.*?)__/g, '<b>$1</b>')
-}).join('')
+// CORRECT — track open/close state
+const segments = text.split(/(<\/?(?:pre|code)>)/gi)
+let inCodeBlock = false
+let result = ''
+for (const segment of segments) {
+  if (segment.match(/^<\/?(pre|code)>$/i)) {
+    inCodeBlock = segment.startsWith('</')  // closing tag = exiting code block
+    result += segment
+  } else if (inCodeBlock) {
+    result += segment  // inside code block — skip conversion
+  } else {
+    result += segment
+      .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
+      .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+      .replace(/__(.*?)__/g, '<b>$1</b>')
+  }
+}
 ```
+
+**Why naive even/odd fails:** With text `<pre>**bold** in code</pre>`:
+- Split produces: `["", "<pre>", "**bold** in code", "</pre>", ""]`
+- Even-indexed parts (0, 2, 4) get converted — but part 2 IS inside the `<pre>` block
+- `**bold** in code` gets converted to `<b>bold</b> in code` inside `<pre>` — **BUG**
+
+The even/odd approach only works if tag boundaries alternate perfectly and every `<pre>` is properly closed. State tracking handles nested/malformed cases correctly.
+
 **Do NOT convert** `*italic*` or `_italic_` to `<i>` — leave as plain text. Converting reintroduces the problem you're trying to solve.
+
+**Same tracking must apply to `#` header conversion** (step 7) — split on `<pre>/<code>` again and only apply outside code blocks.
 
 ### Layer 5: General Allowed-Tag Filter + href Preservation
 Strip disallowed tags, then strip attributes from allowed tags **except `href` on `<a>`**:
@@ -112,27 +131,48 @@ try {
 ```
 
 ### Layer 8: Broadcast / Admin Messages Need Separate Sanitizer
-Broadcast messages bypass `sanitizeHTML()` entirely. They need their own function:
+Broadcast messages bypass `sanitizeHTML()` entirely. They need their own function that converts HTML to Markdown equivalents (since broadcast uses `parse_mode: 'Markdown'`):
 ```js
 function sanitizeBroadcastMessage(text: string): string {
+  // Strip decorative HTML tags (keep inner text) — use \b for word boundaries
+  text = text.replace(/<\/?(i|u|s|em|strong|span|div|p|br|hr|table|tr|td|th|ul|ol|li|h[1-6])\b[^>]*>/gi, '')
+  // Convert HTML to Telegram Markdown equivalents
+  text = text.replace(/<b>/gi, '*').replace(/<\/b>/gi, '*')
+  text = text.replace(/<code>/gi, '`').replace(/<\/code>/gi, '`')
+  text = text.replace(/<pre>/gi, '```').replace(/<\/pre>/gi, '```')
+  // Convert <a href="url">text</a> → [text](url) for Markdown links
+  text = text.replace(/<a\s+href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, '[$2]($1)')
   return text
-    .replace(/<\/?(i|u|s|em|span|div|p|br|hr|table|tr|td|th|ul|ol|li|h[1-6])[^>]*>/gi, '')
-    .replace(/<b>/gi, '*').replace(/<\/b>/gi, '*')      // for Markdown
-    .replace(/<code>/gi, '`').replace(/<\/code>/gi, '`')  // for Markdown
 }
 ```
-If broadcast uses `parse_mode: 'Markdown'`, convert HTML to Markdown equivalents. **Note:** this function does NOT handle `<pre>` or escape Markdown-special characters in converted content — a known limitation.
+**Note:** Use `\b` in this regex too — same over-matching risk as the main sanitizer. Also handle `<pre>` (→ triple backticks) and `<a>` (→ Markdown link syntax). Don't use string backreferences like `\1` in `.replace()` — use numbered groups like `$2`, `$1` instead.
+
+### Layer 9: Escape Bare HTML Entities in Final Output
+After all tag processing, bare `&` and `<` that aren't part of valid Telegram HTML tags will cause Telegram parse errors. Models frequently output things like "AT&T" or "x < y" without escaping.
+
+**Add a final pass** after all other steps:
+```js
+// Escape bare & that are not already &amp;, &lt;, &gt;, &quot;
+text = text.replace(/&(?!(amp|lt|gt|quot);)/g, '&amp;')
+// Escape bare < that are not part of allowed Telegram tags
+text = text.replace(/<(?!\/?(b|i|u|s|code|pre|a|tg-spoiler)(\s[^>]*)?>)/g, '&lt;')
+```
+This catches unescaped entities from the AI model while preserving valid Telegram HTML tags. Content inside `<pre>/<code>` is already escaped by `escapeHTMLEntities()` in earlier steps, so this mainly catches bare entities in normal text.
 
 ## Key Lessons
 
 1. **Don't trust the model** — even with explicit instructions, weaker models (especially free-tier OpenRouter ones) will still output `<i>/<em>` tags. The sanitizer must be the enforcement layer.
-2. **First fix is never complete** — removing `<i>` from allowed set fixed most cases, but some still slipped through. Adding explicit pre-processing caught the rest. Adding `\b` to regex caught edge cases.
-3. **Check ALL output paths** — direct messages, inline queries, broadcasts, admin DMs. Missing any path leaves raw tags visible.
+2. **First fix is never complete** — removing `<i>` from allowed set fixed most cases, but some still slipped through. Adding explicit pre-processing caught the rest. Adding `\b` to regex caught edge cases. Then adding bare entity escaping caught another class.
+3. **Check ALL output paths** — direct messages, inline queries, broadcasts, admin DMs, callback edits, first-active notifications. Missing any path leaves raw tags visible.
 4. **Code blocks are fragile** — `#` comments and `**bold**` inside `<pre>` blocks are extremely common and MUST NOT be converted to HTML. Split on `<pre>/<code>` boundaries before Markdown conversion.
 5. **`href` on `<a>` must survive** — Telegram links break without it. Strip attributes from `<b>/<code>/<pre>` but preserve `href` on `<a>`.
 6. **Regex word boundaries matter** — `<i>` regex without `\b` also matches `<img>`, `<input>`, `<ins>`. Use `\b` after tag name alternations.
 7. **Deleted-message catch blocks** — if a command deletes a "loading" message before sending the result, the catch block can't edit that deleted message. Use nested try/catch or skip the loading message.
 8. **Firestore batch writes for atomicity** — approveUser/banUser/revokeUser/unbanUser write to multiple documents (user record + allowed list + banned list). Sequential writes risk partial failures leaving inconsistent state. Use `db.batch()` for atomic multi-document writes.
+9. **Naive even/odd index splitting is wrong** — splitting text on `<pre>/<code>` tag boundaries and assuming "even indices are outside, odd are inside" is incorrect. Content between `<pre>` and `</pre>` is at an even index. Must track open/close state with a boolean flag.
+10. **Escape bare `&` and `<` in final output** — models output "AT&T", "x < y" without escaping. Telegram's HTML parser rejects bare `&` and `<`. Add a final negative-lookahead regex pass after all other processing.
+11. **Broadcast sanitizer needs same `\b` discipline** — the `sanitizeBroadcastMessage` function had the same over-matching bug as `sanitizeHTML`. Apply `\b` consistently across all sanitizers.
+12. **`.env.example` must match actual env vars** — stale `.env.example` (e.g. listing `GEMINI_API_KEY` when the code uses `GROQ_API_KEY`) misleads developers. Update whenever env dependencies change.
 
 ## Reduced Allowed Tag Set
 
