@@ -264,16 +264,16 @@ function sanitizeWithAI(text: string): Promise<string> {
 }
 
 function sanitizeHTML(text: string): string {
-  const allowed = new Set(['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler'])
+  const allowed = new Set(['b', 'i', 'u', 's', 'code', 'pre', 'a', 'tg-spoiler']);
 
-  // 0. Strip MarkdownV2 backslash escapes that models sometimes output (e.g. \. \! \- \#)
-  text = text.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, '$1')
+  // 0. Strip MarkdownV2 backslash escapes that models sometimes output (e.g. \\. \! \- \#)
+  text = text.replace(/\\([_*[\]()]~`>#+\-=|{}.!\\])/g, '$1');
 
   // 1. Convert Markdown code blocks FIRST (before other replacements)
-  text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`)
+  text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`);
 
   // 2. Convert inline code
-  text = text.replace(/`([^`\n]+)`/g, (_, code) => `<code>${escapeHTMLEntities(code)}</code>`)
+  text = text.replace(/`([^`\n]+)`/g, (_, code) => `<code>${escapeHTMLEntities(code)}</code>`);
 
   // 3. Convert remaining Markdown formatting
   text = text
@@ -281,17 +281,21 @@ function sanitizeHTML(text: string): string {
     .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
     .replace(/__(.*?)__/g, '<b>$1</b>')
     .replace(/\*(.*?)\*/g, '<i>$1</i>')
-    .replace(/_(.*?)_/g, '<i>$1</i>')
+    .replace(/_(.*?)_/g, '<i>$1</i>');
 
-  // 4. Strip any disallowed HTML tags (e.g. leaked <tool_call>, <div>, etc.) but keep content
-  text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?>/g, (match, tag: string) => {
-    return allowed.has(tag.toLowerCase()) ? match : ''
-  })
+  // 4. Strip any disallowed HTML tags but keep content
+  text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?\>/g, (match, tag: string) => {
+    return allowed.has(tag.toLowerCase()) ? match : '';
+  });
 
-  // 5. Strip Markdown headers (### Heading → just the text, bolded)
-  text = text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
+  // 5. Remove all attributes from allowed opening tags (Telegram only allows bare tags)
+  //    This also covers stray spaces like "<b >" which Telegram treats as an empty attribute.
+  text = text.replace(/<(b|i|u|s|code|pre|a|tg-spoiler)(\s[^>]*)?>/gi, '<$1>');
 
-  return text.trim()
+  // 6. Strip Markdown headers (### Heading → just the text, bolded)
+  text = text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
+
+  return text.trim();
 }
 
 function escapeHTMLEntities(text: string): string {
