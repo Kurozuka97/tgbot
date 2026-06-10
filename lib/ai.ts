@@ -272,29 +272,33 @@ function sanitizeHTML(text: string): string {
   text = text.replace(/\\([_*[\]()]~`>#+\-=|{}.!\\])/g, '$1');
 
   // 1. Convert Markdown code blocks FIRST, and escape their content
-  //    This extracts code into <pre> blocks so later steps skip them
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`);
 
   // 2. Convert inline code — escape content inside
   text = text.replace(/`([^`\n]+)`/g, (_, code) => `<code>${escapeHTMLEntities(code)}</code>`);
 
   // 3. Strip <i>, <u>, <s>, <em> tags with word boundary (keep inner content)
-  //    Using \b prevents over-matching tags like <span>, <strong>, <img>
   text = text.replace(/<\/?(i|u|s|em)\b[^>]*>/gi, '');
 
-  // 4. Convert remaining Markdown formatting ONLY outside <pre>/<code> blocks
-  //    Protect content inside <pre>...</pre> and <code>...</code> from conversion
-  const parts = text.split(/(<\/?(?:pre|code)>)/gi)
-  text = parts.map((part, idx) => {
-    // Even indices are content, odd are <pre>/<code> tag boundaries
-    // Skip conversion inside pre/code blocks
-    if (idx % 2 === 1) return part
-    // Check if we're inside a <pre> or <code> block by tracking open/close
-    return part
-      .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
-      .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-      .replace(/__(.*?)__/g, '<b>$1</b>')
-  }).join('')
+  // 4. Convert Markdown formatting ONLY outside <pre>/<code> blocks
+  //    Track open/close state to know which parts are inside code blocks
+  const segments = text.split(/(<\/?(?:pre|code)>)/gi)
+  let inCodeBlock = false
+  let result = ''
+  for (const segment of segments) {
+    if (segment.match(/^<\/?(pre|code)>$/i)) {
+      inCodeBlock = segment.startsWith('</')
+      result += segment
+    } else if (inCodeBlock) {
+      result += segment
+    } else {
+      result += segment
+        .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
+        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+        .replace(/__(.*?)__/g, '<b>$1</b>')
+    }
+  }
+  text = result
 
   // 5. Strip any disallowed HTML tags but keep content
   text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?\>/g, (match, tag: string) => {
@@ -302,13 +306,30 @@ function sanitizeHTML(text: string): string {
   });
 
   // 6. Remove attributes from allowed tags, EXCEPT href on <a>
-  //    Telegram requires href on <a> for links to work
   text = text.replace(/<(b|code|pre|tg-spoiler)(\s[^>]*)?>/gi, '<$1>');
   text = text.replace(/<a\s+href="([^"]*)"[^>]*>/gi, '<a href="$1">');
 
-  // 7. Strip Markdown headers (### Heading → bold text)
-  //    Only outside <pre> blocks
-  text = text.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>');
+  // 7. Convert Markdown headers to bold — only outside <pre>/<code>
+  const segments2 = text.split(/(<\/?(?:pre|code)>)/gi)
+  inCodeBlock = false
+  result = ''
+  for (const segment of segments2) {
+    if (segment.match(/^<\/?(pre|code)>$/i)) {
+      inCodeBlock = segment.startsWith('</')
+      result += segment
+    } else if (inCodeBlock) {
+      result += segment
+    } else {
+      result += segment.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
+    }
+  }
+  text = result
+
+  // 8. Escape bare & < > that are NOT part of allowed Telegram HTML tags
+  //    This prevents Telegram parse errors from unescaped entities in normal text
+  text = text.replace(/&(?!(amp|lt|gt|quot);)/g, '&amp;')
+  // Escape bare < that are not part of allowed tags
+  text = text.replace(/<(?!\/?(b|i|u|s|code|pre|a|tg-spoiler)(\s[^>]*)?>)/g, '&lt;')
 
   return text.trim();
 }

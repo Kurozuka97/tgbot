@@ -27,10 +27,15 @@ function isAdmin(userId: number) {
 }
 
 function sanitizeBroadcastMessage(text: string): string {
+  // Strip decorative HTML tags (keep inner text)
+  text = text.replace(/<\/?(i|u|s|em|strong|span|div|p|br|hr|table|tr|td|th|ul|ol|li|h[1-6])\b[^>]*>/gi, '')
+  // Convert HTML to Telegram Markdown equivalents
+  text = text.replace(/<b>/gi, '*').replace(/<\/b>/gi, '*')
+  text = text.replace(/<code>/gi, '`').replace(/<\/code>/gi, '`')
+  text = text.replace(/<pre>/gi, '```').replace(/<\/pre>/gi, '```')
+  // Convert <a href="url">text</a> → [text](url)
+  text = text.replace(/<a\s+href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, '[$2]($1)')
   return text
-    .replace(/<\/?(i|u|s|em|strong|span|div|p|br|hr|table|tr|td|th|ul|ol|li|h[1-6])[^>]*>/gi, '')
-    .replace(/<b>/gi, '*').replace(/<\/b>/gi, '*')
-    .replace(/<code>/gi, '`').replace(/<\/code>/gi, '`')
 }
 
 // FIX: ban check now included in isAllowed so it's enforced everywhere
@@ -208,7 +213,7 @@ bot.callbackQuery(/^approve:(\d+)$/, async (ctx) => {
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`✅ *Approved:* ${name} (\`${targetId}\`)`)
+  await ctx.editMessageText(`✅ *Approved:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
   await ctx.answerCallbackQuery('✅ User approved')
 })
 
@@ -233,7 +238,7 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`❌ *Rejected:* ${name} (\`${targetId}\`)`)
+  await ctx.editMessageText(`❌ *Rejected:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
   await ctx.answerCallbackQuery('❌ User rejected')
 })
 
@@ -261,7 +266,7 @@ bot.callbackQuery(/^ban:(\d+)$/, async (ctx) => {
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`🚫 *Banned:* ${name} (\`${targetId}\`)`)
+  await ctx.editMessageText(`🚫 *Banned:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
   await ctx.answerCallbackQuery('🚫 User banned')
 })
 
@@ -775,7 +780,7 @@ bot.on('message:photo', async (ctx) => {
     const result = await chat(caption, [part], userId)
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`)
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'Markdown' })
     }
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
   } catch (err) {
@@ -795,7 +800,7 @@ bot.on('message:document', async (ctx) => {
     const result = await chat(caption, [part], userId)
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`)
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'Markdown' })
     }
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
   } catch (err) {
@@ -841,7 +846,7 @@ bot.on('message:text', async (ctx) => {
 
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`)
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`, { parse_mode: 'Markdown' })
     }
 
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
