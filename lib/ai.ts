@@ -72,11 +72,13 @@ export async function getHistory(userId: number): Promise<Message[]> {
 export async function appendHistory(userId: number, role: 'user' | 'assistant', content: string): Promise<void> {
   try {
     const ref = db.collection('tgbot_history').doc(String(userId))
-    const doc = await ref.get()
-    const messages: Message[] = doc.exists ? (doc.data()?.messages ?? []) : []
-    messages.push({ role, content })
-    const trimmed = messages.slice(-MAX_HISTORY)
-    await ref.set({ messages: trimmed }, { merge: true })
+    await db.runTransaction(async (t) => {
+      const doc = await t.get(ref)
+      const messages: Message[] = doc.exists ? (doc.data()?.messages ?? []) : []
+      messages.push({ role, content })
+      const trimmed = messages.slice(-MAX_HISTORY)
+      t.set(ref, { messages: trimmed }, { merge: true })
+    })
   } catch {}
 }
 

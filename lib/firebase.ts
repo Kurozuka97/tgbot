@@ -181,33 +181,40 @@ export async function addPendingUser(user: {
   languageCode?: string
 }): Promise<{ ok: boolean; cooldownMs?: number }> {
   const ref = db.collection('pending_users').doc(String(user.userId))
-  const doc = await ref.get()
   const now = Date.now()
 
-  if (doc.exists) {
-    const data = doc.data() as PendingUser
-    const elapsed = now - data.lastRequestedAt
-    if (elapsed < REQUEST_COOLDOWN_MS) {
-      return { ok: false, cooldownMs: REQUEST_COOLDOWN_MS - elapsed }
-    }
-    // Update existing request
-    await ref.update({
-      lastRequestedAt: now,
-      requestCount: admin.firestore.FieldValue.increment(1)
-    })
-  } else {
-    await ref.set({
-      ...user,
-      username: user.username ?? null,
-      firstName: user.firstName ?? null,
-      languageCode: user.languageCode ?? null,
-      requestedAt: now,
-      lastRequestedAt: now,
-      requestCount: 1
-    })
-  }
+  try {
+    let result: { ok: boolean; cooldownMs?: number } = { ok: true }
+    await db.runTransaction(async (t) => {
+      const doc = await t.get(ref)
 
-  return { ok: true }
+      if (doc.exists) {
+        const data = doc.data() as PendingUser
+        const elapsed = now - data.lastRequestedAt
+        if (elapsed < REQUEST_COOLDOWN_MS) {
+          result = { ok: false, cooldownMs: REQUEST_COOLDOWN_MS - elapsed }
+          return
+        }
+        t.update(ref, {
+          lastRequestedAt: now,
+          requestCount: admin.firestore.FieldValue.increment(1)
+        })
+      } else {
+        t.set(ref, {
+          ...user,
+          username: user.username ?? null,
+          firstName: user.firstName ?? null,
+          languageCode: user.languageCode ?? null,
+          requestedAt: now,
+          lastRequestedAt: now,
+          requestCount: 1
+        })
+      }
+    })
+    return result
+  } catch {
+    return { ok: false }
+  }
 }
 
 export async function removePendingUser(userId: number): Promise<void> {
@@ -223,21 +230,27 @@ export async function getPendingUsers(): Promise<PendingUser[]> {
 
 export async function trackUsage(userId: number): Promise<boolean> {
   const ref = db.collection('users').doc(String(userId))
-  const doc = await ref.get()
   const now = Date.now()
 
-  if (!doc.exists) return false
+  try {
+    let isFirstActive = false
+    await db.runTransaction(async (t) => {
+      const doc = await t.get(ref)
+      if (!doc.exists) return
 
-  const data = doc.data() as UserRecord
-  const isFirstActive = !data.firstActiveAt
+      const data = doc.data() as UserRecord
+      isFirstActive = !data.firstActiveAt
 
-  await ref.update({
-    messageCount: admin.firestore.FieldValue.increment(1),
-    lastActive: now,
-    ...(isFirstActive ? { firstActiveAt: now } : {})
-  })
-
-  return isFirstActive
+      t.update(ref, {
+        messageCount: admin.firestore.FieldValue.increment(1),
+        lastActive: now,
+        ...(isFirstActive ? { firstActiveAt: now } : {})
+      })
+    })
+    return isFirstActive
+  } catch {
+    return false
+  }
 }
 
 // ─── Maintenance Mode ─────────────────────────────────────────────────────────

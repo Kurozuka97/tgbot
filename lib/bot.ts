@@ -1,4 +1,3 @@
-process.emitWarning = () => {}
 import { Bot, InputFile, InlineKeyboard } from 'grammy'
 import { evaluate } from 'mathjs'
 import {
@@ -714,20 +713,6 @@ bot.command('dadjoke', async (ctx) => {
 
 // ─── Image & Utility Commands ─────────────────────────────────────────────────
 
-bot.command('imagine', async (ctx) => {
-  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  const prompt = ctx.match.trim()
-  if (!prompt) return ctx.reply('Usage: /imagine <prompt>')
-  const msg = await ctx.reply('🎨 Generating image...')
-  try {
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`
-    await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
-    await ctx.replyWithPhoto(url, { caption: `🎨 ${prompt}` })
-  } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
-  }
-})
-
 bot.command('sticker', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const prompt = ctx.match.trim()
@@ -865,6 +850,16 @@ bot.on('message:text', async (ctx) => {
 // ─── Inline Query ─────────────────────────────────────────────────────────────
 
 bot.on('inline_query', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) {
+    return ctx.answerInlineQuery([{
+      type: 'article',
+      id: 'lock',
+      title: '⛔ Access Required',
+      input_message_content: { message_text: '⛔ You need access to use this bot. Send /start to request access.' },
+      description: 'Access denied'
+    }])
+  }
+
   const query = ctx.inlineQuery.query.trim()
   if (!query) {
     return ctx.answerInlineQuery([{
@@ -967,8 +962,6 @@ bot.command('roastme', async (ctx) => {
   }
 })
 
-// /imagine with style flags
-// Override the existing /imagine with style support
 bot.command('imagine', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   let prompt = ctx.match.trim()
