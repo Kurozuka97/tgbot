@@ -271,6 +271,10 @@ function sanitizeHTML(text: string): string {
   // 0. Strip MarkdownV2 backslash escapes that models sometimes output (e.g. \\. \! \- \#)
   text = text.replace(/\\([_*[\]()]~`>#+\-=|{}.!\\])/g, '$1');
 
+  // 0.5 Explicitly strip <i>, <u>, <s>, <em> tags (keep inner content)
+  //     Models frequently overuse these, making output look messy
+  text = text.replace(/<\/?(i|u|s|em)[^>]*>/gi, '');
+
   // 1. Convert Markdown code blocks FIRST (before other replacements)
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`);
 

@@ -26,6 +26,13 @@ function isAdmin(userId: number) {
   return userId === ADMIN_ID
 }
 
+function sanitizeBroadcastMessage(text: string): string {
+  return text
+    .replace(/<\/?(i|u|s|em|strong|span|div|p|br|hr|table|tr|td|th|ul|ol|li|h[1-6])[^>]*>/gi, '')
+    .replace(/<b>/gi, '*').replace(/<\/b>/gi, '*')
+    .replace(/<code>/gi, '`').replace(/<\/code>/gi, '`')
+}
+
 // FIX: ban check now included in isAllowed so it's enforced everywhere
 async function isAllowed(userId: number): Promise<boolean> {
   if (isAdmin(userId)) return true
@@ -1092,7 +1099,8 @@ bot.command('broadcast', async (ctx) => {
   let success = 0, failed = 0
   for (const user of users) {
     try {
-      await bot.api.sendMessage(user.userId, `📢 *Broadcast:*\n\n${message}`)
+      const sanitized = sanitizeBroadcastMessage(message)
+      await bot.api.sendMessage(user.userId, `📢 *Broadcast:*\n\n${sanitized}`, { parse_mode: 'Markdown' })
       success++
     } catch { failed++ }
   }
