@@ -1,4 +1,5 @@
 import { Bot, InputFile, InlineKeyboard } from 'grammy'
+import { registerLosslessHandler } from './lossless'
 import { evaluate } from 'mathjs'
 import {
   chat, chatWithSearch, fileToGenerativePart,
@@ -1141,5 +1142,7 @@ bot.command('maintenance', async (ctx) => {
     { parse_mode: 'Markdown' }
   )
 })
+
+registerLosslessHandler(bot)
 
 export default bot
