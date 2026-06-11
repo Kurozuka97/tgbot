@@ -125,15 +125,22 @@ function patchCaption(caption: string | undefined, tag: string): string {
   return stripped ? `${stripped}\n\n${tag}` : tag
 }
 
-// Retry editMessageCaption up to 4 times.
-// On 429, waits exactly retry_after seconds (+ 300ms buffer) before retrying.
+// Stagger concurrent edits using the last digit of message_id.
+// Consecutive posts in a batch have consecutive IDs, so they naturally
+// spread across time: id%10 × 1100ms → max ~9.9s spread for 10 messages.
+// This prevents hitting the ~1 edit/sec per-chat limit in the first place.
+function staggerDelay(messageId: number): number {
+  return (messageId % 10) * 1100
+}
+
+// Retry on 429 up to 3 times as a safety net for any that still clash.
 async function editWithRetry(
   api: Bot['api'],
   chatId: number,
   messageId: number,
   caption: string,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       await api.editMessageCaption(chatId, messageId, { caption })
       return
@@ -143,12 +150,11 @@ async function editWithRetry(
         await new Promise(r => setTimeout(r, wait))
         continue
       }
-      // Non-retryable error (deleted msg, no permission, etc.)
       console.error(`[lossless] edit failed for msg ${messageId}:`, e)
       return
     }
   }
-  console.error(`[lossless] gave up on msg ${messageId} after 4 attempts`)
+  console.error(`[lossless] gave up on msg ${messageId} after retries`)
 }
 
 export function registerLosslessHandler(bot: Bot): void {
@@ -167,6 +173,10 @@ export function registerLosslessHandler(bot: Bot): void {
 
     const newCaption = patchCaption(msg.caption, tag)
     if (newCaption === (msg.caption ?? '')) return
+
+    // Stagger first — spread concurrent edits to stay under rate limit
+    const delay = staggerDelay(msg.message_id)
+    if (delay > 0) await new Promise(r => setTimeout(r, delay))
 
     await editWithRetry(ctx.api, msg.chat.id, msg.message_id, newCaption)
   })
