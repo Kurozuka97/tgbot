@@ -1,4 +1,4 @@
-import { Bot } from 'grammy'
+import { Bot, GrammyError } from 'grammy'
 
 const LOSSLESS_EXT  = new Set(['flac','wav','aiff','aif','alac','ape','wv','tak','tta'])
 const LOSSY_EXT     = new Set(['mp3','aac','ogg','opus','m4a','wma'])
@@ -19,18 +19,30 @@ const FORMAT_TAG: Record<string, string> = {
   tta:  '#TTA #Lossless',
 }
 
-// Strips any existing quality tag before appending the correct one
 const QUALITY_TAG_RE = /#(lossless|lossy|flac\d*|wav|aiff|alac|ape|wavpack|tak|tta|mp3|aac|ogg|opus|m4a|wma|\d+kbps?)\b/gi
 
-// Fetches first 64 bytes of a FLAC file and parses the STREAMINFO block
-// to extract bit depth — no need to download the whole file.
+const TG_MAX_DOWNLOAD = 20 * 1024 * 1024
+
+// Parse bit depth from filename — works for any file size, no API call needed.
+// Handles common audiophile naming: [24-96]  [24-192]  24bit  24-bit  24/96
+function parseFilenameBps(fileName: string | undefined): number | null {
+  if (!fileName) return null
+  const f = fileName.toLowerCase()
+  const m = f.match(/\b(16|24|32)[- ]?bit\b/)
+          || f.match(/\[(16|24|32)[_\-]?\d+\]/)
+          || f.match(/\b(16|24|32)\/\d{2,3}\b/)
+  return m ? parseInt(m[1], 10) : null
+}
+
+// Fetch first 64 bytes and parse STREAMINFO for bit depth.
+// Only viable for files ≤ 20 MB — larger files fail at getFile stage.
 //
 // FLAC layout:
 //   [0-3]  'fLaC' magic
 //   [4]    metadata block header (bit7=last, bits6-0=type; 0=STREAMINFO)
-//   [5-7]  block length (24-bit BE, always 34 for STREAMINFO)
-//   [8-41] STREAMINFO (34 bytes):
-//            [18-25] packed: sample_rate(20b) | channels-1(3b) | bps-1(5b) | total_samples(36b)
+//   [5-7]  block length (24-bit BE, always 34)
+//   [8-41] STREAMINFO:
+//            [18-21] packed: sample_rate(20b) | channels-1(3b) | bps-1(5b) | ...
 //            bps-1 → bit0 of byte[20] (MSB) + bits7-4 of byte[21]
 async function fetchFlacBitDepth(fileId: string): Promise<number | null> {
   try {
@@ -47,18 +59,13 @@ async function fetchFlacBitDepth(fileId: string): Promise<number | null> {
     if (!info.ok || !info.result?.file_path) return null
 
     const fileUrl = `https://api.telegram.org/file/bot${token}/${info.result.file_path}`
-
     const fileRes = await fetch(fileUrl, { headers: { Range: 'bytes=0-63' } })
     const reader  = fileRes.body!.getReader()
     const { value: b } = await reader.read()
     await reader.cancel()
 
     if (!b || b.length < 22) return null
-
-    // Verify 'fLaC' magic
     if (b[0] !== 0x66 || b[1] !== 0x4C || b[2] !== 0x61 || b[3] !== 0x43) return null
-
-    // First block must be STREAMINFO (type 0)
     if ((b[4] & 0x7F) !== 0) return null
 
     const bpsMinusOne = ((b[20] & 0x01) << 4) | ((b[21] >> 4) & 0x0F)
@@ -71,22 +78,33 @@ async function fetchFlacBitDepth(fileId: string): Promise<number | null> {
 function buildFlacTag(bps: number | null): string {
   if (bps === 16) return '#FLAC16 #Lossless'
   if (bps === 24) return '#FLAC24 #Lossless'
-  if (bps != null) return `#FLAC${bps} #Lossless`  // 32-bit etc.
-  return '#FLAC #Lossless'                           // fallback: >20MB or parse fail
+  if (bps != null) return `#FLAC${bps} #Lossless`
+  return '#FLAC #Lossless'
 }
 
 async function resolveQuality(
   mimeType: string | undefined,
   fileName: string | undefined,
   fileId: string,
+  fileSize: number | undefined,
 ): Promise<{ lossless: boolean | null; tag: string }> {
   const ext  = fileName?.split('.').pop()?.toLowerCase()
   const mime = mimeType?.toLowerCase()
 
   if ((ext && LOSSLESS_EXT.has(ext)) || (mime && LOSSLESS_MIME.has(mime))) {
     if (ext === 'flac' || mime === 'audio/flac' || mime === 'audio/x-flac') {
-      const bps = await fetchFlacBitDepth(fileId)
-      return { lossless: true, tag: buildFlacTag(bps) }
+      // 1) Filename parse — zero cost, works regardless of file size
+      const fnameBps = parseFilenameBps(fileName)
+      if (fnameBps !== null) return { lossless: true, tag: buildFlacTag(fnameBps) }
+
+      // 2) Header parse — only if Telegram can actually serve the file
+      if (!fileSize || fileSize <= TG_MAX_DOWNLOAD) {
+        const bps = await fetchFlacBitDepth(fileId)
+        return { lossless: true, tag: buildFlacTag(bps) }
+      }
+
+      // 3) File too large and no bit depth in filename
+      return { lossless: true, tag: '#FLAC #Lossless' }
     }
     return { lossless: true, tag: (ext && FORMAT_TAG[ext]) || '#Lossless' }
   }
@@ -107,6 +125,32 @@ function patchCaption(caption: string | undefined, tag: string): string {
   return stripped ? `${stripped}\n\n${tag}` : tag
 }
 
+// Retry editMessageCaption up to 4 times.
+// On 429, waits exactly retry_after seconds (+ 300ms buffer) before retrying.
+async function editWithRetry(
+  api: Bot['api'],
+  chatId: number,
+  messageId: number,
+  caption: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await api.editMessageCaption(chatId, messageId, { caption })
+      return
+    } catch (e) {
+      if (e instanceof GrammyError && e.error_code === 429) {
+        const wait = ((e.parameters as { retry_after?: number })?.retry_after ?? 5) * 1000 + 300
+        await new Promise(r => setTimeout(r, wait))
+        continue
+      }
+      // Non-retryable error (deleted msg, no permission, etc.)
+      console.error(`[lossless] edit failed for msg ${messageId}:`, e)
+      return
+    }
+  }
+  console.error(`[lossless] gave up on msg ${messageId} after 4 attempts`)
+}
+
 export function registerLosslessHandler(bot: Bot): void {
   bot.on('channel_post', async (ctx) => {
     const msg   = ctx.channelPost
@@ -116,19 +160,14 @@ export function registerLosslessHandler(bot: Bot): void {
     const mimeType = 'mime_type' in media ? media.mime_type : undefined
     const fileName = 'file_name' in media ? media.file_name : undefined
     const fileId   = media.file_id
+    const fileSize = 'file_size' in media ? media.file_size : undefined
 
-    const { lossless, tag } = await resolveQuality(mimeType, fileName, fileId)
+    const { lossless, tag } = await resolveQuality(mimeType, fileName, fileId, fileSize)
     if (lossless === null) return
 
     const newCaption = patchCaption(msg.caption, tag)
     if (newCaption === (msg.caption ?? '')) return
 
-    try {
-      await ctx.api.editMessageCaption(msg.chat.id, msg.message_id, {
-        caption: newCaption,
-      })
-    } catch (e) {
-      console.error(`[lossless] edit failed for msg ${msg.message_id}:`, e)
-    }
+    await editWithRetry(ctx.api, msg.chat.id, msg.message_id, newCaption)
   })
 }
