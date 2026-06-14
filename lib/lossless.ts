@@ -203,6 +203,28 @@ async function processMedia(
   const fileId   = media.file_id
   const fileSize = 'file_size' in media ? media.file_size : undefined
 
+  // Quick check for large FLAC files to avoid Vercel timeout on getFile/fetch
+  const ext = fileName?.split('.').pop()?.toLowerCase()
+  if ((ext === 'flac' || mimeType === 'audio/flac') && fileSize && fileSize > TG_MAX_DOWNLOAD) {
+    const fnameBps = parseFilenameBps(fileName)
+    if (fnameBps !== null) {
+      const tag = buildFlacTag(fnameBps)
+      const newCaption = patchCaption(caption, tag)
+      if (newCaption !== (caption ?? '')) {
+        await editWithRetry(api, chatId, messageId, newCaption)
+      }
+      return
+    }
+    // If no bit depth in filename and file is too large, skip header parsing
+    // to ensure we at least tag it as generic lossless without timing out
+    const tag = '#FLAC #Lossless'
+    const newCaption = patchCaption(caption, tag)
+    if (newCaption !== (caption ?? '')) {
+      await editWithRetry(api, chatId, messageId, newCaption)
+    }
+    return
+  }
+
   const { lossless, tag } = await resolveQuality(mimeType, fileName, fileId, fileSize)
   if (lossless === null) return
 
