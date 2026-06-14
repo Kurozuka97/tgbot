@@ -1,3 +1,4 @@
+
 import { Bot, GrammyError } from 'grammy'
 
 const LOSSLESS_EXT  = new Set(['flac','wav','aiff','aif','alac','ape','wv','tak','tta'])
@@ -29,7 +30,7 @@ function parseFilenameBps(fileName: string | undefined): number | null {
   if (!fileName) return null
   const f = fileName.toLowerCase()
   const m = f.match(/\b(16|24|32)[- ]?bit\b/)
-          || f.match(/\[(16|24|32)[_\-]?\d+\]/)
+          || f.match(/\[(16|24|32)[_\-\s]?\d+\]/)
           || f.match(/\b(16|24|32)\/\d{2,3}\b/)
   return m ? parseInt(m[1], 10) : null
 }
@@ -128,7 +129,7 @@ function patchCaption(caption: string | undefined, tag: string): string {
 // Stagger concurrent edits using the last digit of message_id.
 // Consecutive posts in a batch have consecutive IDs, so they naturally
 // spread across time: id%10 × 1100ms → max ~9.9s spread for 10 messages.
-// This prevents hitting the ~1 edit/sec per-chat limit in the first place.
+// This prevents hitting the ~1 edit/sec per-chat rate limit in the first place.
 function staggerDelay(messageId: number): number {
   return (messageId % 10) * 1100
 }
@@ -157,27 +158,60 @@ async function editWithRetry(
   console.error(`[lossless] gave up on msg ${messageId} after retries`)
 }
 
+// Extract media from either a Message or ChannelPost
+function extractMedia(ctx: any) {
+  const msg = ctx.message || ctx.channelPost
+  if (!msg) return null
+  
+  // Check for audio first (songs typically come as audio)
+  if (msg.audio) return { media: msg.audio, msg }
+  // Then check document (some users send audio as documents)
+  if (msg.document) return { media: msg.document, msg }
+  
+  return null
+}
+
 export function registerLosslessHandler(bot: Bot): void {
+  // Handle channel posts
   bot.on('channel_post', async (ctx) => {
-    const msg   = ctx.channelPost
+    const msg = ctx.channelPost
     const media = msg.audio ?? msg.document
     if (!media) return
 
-    const mimeType = 'mime_type' in media ? media.mime_type : undefined
-    const fileName = 'file_name' in media ? media.file_name : undefined
-    const fileId   = media.file_id
-    const fileSize = 'file_size' in media ? media.file_size : undefined
-
-    const { lossless, tag } = await resolveQuality(mimeType, fileName, fileId, fileSize)
-    if (lossless === null) return
-
-    const newCaption = patchCaption(msg.caption, tag)
-    if (newCaption === (msg.caption ?? '')) return
-
-    // Stagger first — spread concurrent edits to stay under rate limit
-    const delay = staggerDelay(msg.message_id)
-    if (delay > 0) await new Promise(r => setTimeout(r, delay))
-
-    await editWithRetry(ctx.api, msg.chat.id, msg.message_id, newCaption)
+    await processMedia(ctx.api, msg.chat.id, msg.message_id, media, msg.caption)
   })
+
+  // Handle regular messages (private chats, groups, supergroups)
+  bot.on('message', async (ctx) => {
+    const msg = ctx.message
+    const media = msg.audio ?? msg.document
+    if (!media) return
+
+    await processMedia(ctx.api, msg.chat.id, msg.message_id, media, msg.caption)
+  })
+}
+
+async function processMedia(
+  api: Bot['api'],
+  chatId: number,
+  messageId: number,
+  media: any,
+  caption: string | undefined
+): Promise<void> {
+  const mimeType = 'mime_type' in media ? media.mime_type : undefined
+  const fileName = 'file_name' in media ? media.file_name : undefined
+  const fileId   = media.file_id
+  const fileSize = 'file_size' in media ? media.file_size : undefined
+
+  const { lossless, tag } = await resolveQuality(mimeType, fileName, fileId, fileSize)
+  if (lossless === null) return
+
+  const newCaption = patchCaption(caption, tag)
+  if (newCaption === (caption ?? '')) return
+
+  // Stagger first — spread concurrent edits to stay under rate limit
+  const delay = staggerDelay(messageId)
+  if (delay > 0) await new Promise(r => setTimeout(r, delay))
+
+  await editWithRetry(api, chatId, messageId, newCaption)
 }
