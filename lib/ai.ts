@@ -63,6 +63,7 @@ interface Message {
 // ─── History & Persona (Firestore) ───────────────────────────────────────────
 export async function getHistory(userId: number): Promise<Message[]> {
   try {
+    if (!db) return []
     const doc = await db.collection('tgbot_history').doc(String(userId)).get()
     if (!doc.exists) return []
     return doc.data()?.messages ?? []
@@ -71,6 +72,7 @@ export async function getHistory(userId: number): Promise<Message[]> {
 
 export async function appendHistory(userId: number, role: 'user' | 'assistant', content: string): Promise<void> {
   try {
+    if (!db) return
     const ref = db.collection('tgbot_history').doc(String(userId))
     await db.runTransaction(async (t) => {
       const doc = await t.get(ref)
@@ -84,12 +86,14 @@ export async function appendHistory(userId: number, role: 'user' | 'assistant', 
 
 export async function clearHistory(userId: number): Promise<void> {
   try {
+    if (!db) return
     await db.collection('tgbot_history').doc(String(userId)).set({ messages: [] })
   } catch {}
 }
 
 export async function getPersona(userId: number): Promise<string> {
   try {
+    if (!db) return 'default'
     const doc = await db.collection('tgbot_prefs').doc(String(userId)).get()
     if (!doc.exists) return 'default'
     return doc.data()?.persona ?? 'default'
@@ -97,6 +101,7 @@ export async function getPersona(userId: number): Promise<string> {
 }
 
 export async function setPersona(userId: number, persona: string): Promise<void> {
+  if (!db) return
   await db.collection('tgbot_prefs').doc(String(userId)).set({ persona }, { merge: true })
   await clearHistory(userId)
 }
