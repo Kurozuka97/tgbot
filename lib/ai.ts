@@ -349,6 +349,7 @@ function escapeHTMLEntities(text: string): string {
 // ─── User model preference (Firestore) ───────────────────────────────────────
 export async function getUserProvider(userId: number): Promise<{ provider: string; model?: string }> {
   try {
+    if (!db) return { provider: 'auto' }
     const doc = await db.collection('tgbot_prefs').doc(String(userId)).get()
     if (!doc.exists) return { provider: 'auto' }
     const data = doc.data()!
@@ -359,6 +360,7 @@ export async function getUserProvider(userId: number): Promise<{ provider: strin
 }
 
 export async function setUserProvider(userId: number, provider: string, model?: string): Promise<void> {
+  if (!db) return
   const data: any = { provider }
   if (model) data.model = model
   else data.model = null
