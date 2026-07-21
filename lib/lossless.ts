@@ -1,6 +1,7 @@
 
 import { Bot, GrammyError } from 'grammy'
 
+// Configurable constants
 const LOSSLESS_EXT  = new Set(['flac','wav','aiff','aif','alac','ape','wv','tak','tta'])
 const LOSSY_EXT     = new Set(['mp3','aac','ogg','opus','m4a','wma'])
 const LOSSLESS_MIME = new Set([
@@ -23,6 +24,15 @@ const FORMAT_TAG: Record<string, string> = {
 const QUALITY_TAG_RE = /#(lossless|lossy|flac\d*|wav|aiff|alac|ape|wavpack|tak|tta|mp3|aac|ogg|opus|m4a|wma|\d+kbps?)\b/gi
 
 const TG_MAX_DOWNLOAD = 20 * 1024 * 1024
+const FETCH_TIMEOUT_MS = parseInt(process.env.LOSSLESS_FETCH_TIMEOUT ?? '8000', 10)
+const BITDEPTH_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+
+// In-memory cache for bit depth results (prevents redundant API calls)
+interface CacheEntry {
+  bps: number | null
+  timestamp: number
+}
+const bitDepthCache = new Map<string, CacheEntry>()
 
 // Parse bit depth from filename — works for any file size, no API call needed.
 // Handles common audiophile naming: [24-96]  [24-192]  24bit  24-bit  24/96
@@ -46,13 +56,26 @@ function parseFilenameBps(fileName: string | undefined): number | null {
 //            [18-21] packed: sample_rate(20b) | channels-1(3b) | bps-1(5b) | ...
 //            bps-1 → bit0 of byte[20] (MSB) + bits7-4 of byte[21]
 async function fetchFlacBitDepth(fileId: string): Promise<number | null> {
+  // Check cache first
+  const cached = bitDepthCache.get(fileId)
+  if (cached && Date.now() - cached.timestamp < BITDEPTH_CACHE_TTL) {
+    return cached.bps
+  }
+
   try {
     const token = process.env.BOT_TOKEN
     if (!token) return null
 
+    // Add timeout to prevent hanging
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+
     const infoRes = await fetch(
-      `https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`
+      `https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`,
+      { signal: controller.signal }
     )
+    clearTimeout(timeoutId)
+
     const info = await infoRes.json() as {
       ok: boolean
       result?: { file_path?: string }
@@ -60,7 +83,16 @@ async function fetchFlacBitDepth(fileId: string): Promise<number | null> {
     if (!info.ok || !info.result?.file_path) return null
 
     const fileUrl = `https://api.telegram.org/file/bot${token}/${info.result.file_path}`
-    const fileRes = await fetch(fileUrl, { headers: { Range: 'bytes=0-63' } })
+    
+    const fileController = new AbortController()
+    const fileTimeoutId = setTimeout(() => fileController.abort(), FETCH_TIMEOUT_MS)
+    
+    const fileRes = await fetch(fileUrl, { 
+      headers: { Range: 'bytes=0-63' },
+      signal: fileController.signal 
+    })
+    clearTimeout(fileTimeoutId)
+    
     const reader  = fileRes.body!.getReader()
     const { value: b } = await reader.read()
     await reader.cancel()
@@ -70,8 +102,16 @@ async function fetchFlacBitDepth(fileId: string): Promise<number | null> {
     if ((b[4] & 0x7F) !== 0) return null
 
     const bpsMinusOne = ((b[20] & 0x01) << 4) | ((b[21] >> 4) & 0x0F)
-    return bpsMinusOne + 1
-  } catch {
+    const bps = bpsMinusOne + 1
+    
+    // Cache the result
+    bitDepthCache.set(fileId, { bps, timestamp: Date.now() })
+    
+    return bps
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.warn(`[lossless] fetchFlacBitDepth timeout for ${fileId}`)
+    }
     return null
   }
 }
@@ -236,4 +276,17 @@ async function processMedia(
   if (delay > 0) await new Promise(r => setTimeout(r, delay))
 
   await editWithRetry(api, chatId, messageId, newCaption)
+}
+
+// Periodic cache cleanup (remove expired entries every 10 minutes)
+if (typeof global !== 'undefined' && !(global as any).__losslessCacheCleanup) {
+  (global as any).__losslessCacheCleanup = true
+  setInterval(() => {
+    const now = Date.now()
+    for (const [key, entry] of bitDepthCache.entries()) {
+      if (now - entry.timestamp > BITDEPTH_CACHE_TTL) {
+        bitDepthCache.delete(key)
+      }
+    }
+  }, 10 * 60 * 1000)
 }
