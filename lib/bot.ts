@@ -27,10 +27,17 @@ function isAdmin(userId: number) {
   return userId === ADMIN_ID
 }
 
+// FIX: Escape special characters for MarkdownV2
+// Telegram MarkdownV2 requires escaping these characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
+function escapeMarkdownV2(text: string): string {
+  if (!text) return text
+  return text.replace(/([_\*\[\]()~`>#+\-=|{}.!])/g, '\\$1')
+}
+
 function sanitizeBroadcastMessage(text: string): string {
   // Strip decorative HTML tags (keep inner text)
   text = text.replace(/<\/?(i|u|s|em|strong|span|div|p|br|hr|table|tr|td|th|ul|ol|li|h[1-6])\b[^>]*>/gi, '')
-  // Convert HTML to Telegram Markdown equivalents
+  // Convert HTML to Telegram MarkdownV2 equivalents
   text = text.replace(/<b>/gi, '*').replace(/<\/b>/gi, '*')
   text = text.replace(/<code>/gi, '`').replace(/<\/code>/gi, '`')
   text = text.replace(/<pre>/gi, '```').replace(/<\/pre>/gi, '```')
@@ -149,7 +156,7 @@ bot.command('start', async (ctx) => {
       `*Inline Mode:*\n` +
       `• @botname <query> — AI anywhere\n` +
       `• @botname imagine <prompt> — generate image anywhere`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   }
 
@@ -166,7 +173,7 @@ bot.command('start', async (ctx) => {
     `👋 Hey *${firstName}*!\n\n` +
     `Your access request has been sent to the admin. ` +
     `You'll be notified once approved. ⏳`,
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'MarkdownV2' }
   )
 
   const userTag = username ? `@${username}` : firstName
@@ -182,7 +189,7 @@ bot.command('start', async (ctx) => {
     `👤 Name: ${userTag}\n` +
     `🆔 ID: \`${userId}\`\n` +
     `🌐 Language: ${languageCode ?? 'unknown'}`,
-    { parse_mode: 'Markdown', reply_markup: keyboard }
+    { parse_mode: 'MarkdownV2', reply_markup: keyboard }
   )
 })
 
@@ -209,12 +216,12 @@ bot.callbackQuery(/^approve:(\d+)$/, async (ctx) => {
     await bot.api.sendMessage(
       targetId,
       `✅ Your access has been *approved!*\n\nSend /start to begin.`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`✅ *Approved:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
+  await ctx.editMessageText(`✅ *Approved:* ${name} (\`${targetId}\`)`, { parse_mode: 'MarkdownV2' })
   await ctx.answerCallbackQuery('✅ User approved')
 })
 
@@ -234,12 +241,12 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
     await bot.api.sendMessage(
       targetId,
       `❌ Your access request has been *rejected.*\n\nContact the admin if you think this is a mistake.`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`❌ *Rejected:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
+  await ctx.editMessageText(`❌ *Rejected:* ${name} (\`${targetId}\`)`, { parse_mode: 'MarkdownV2' })
   await ctx.answerCallbackQuery('❌ User rejected')
 })
 
@@ -262,12 +269,12 @@ bot.callbackQuery(/^ban:(\d+)$/, async (ctx) => {
     await bot.api.sendMessage(
       targetId,
       `🚫 You have been *banned* from this bot.`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`🚫 *Banned:* ${name} (\`${targetId}\`)`, { parse_mode: 'Markdown' })
+  await ctx.editMessageText(`🚫 *Banned:* ${name} (\`${targetId}\`)`, { parse_mode: 'MarkdownV2' })
   await ctx.answerCallbackQuery('🚫 User banned')
 })
 
@@ -301,7 +308,7 @@ bot.command('admin', async (ctx) => {
 
   return ctx.reply(
     `👥 *Pending Requests (${pending.length}):*\n\n${list}`,
-    { parse_mode: 'Markdown', reply_markup: keyboard }
+    { parse_mode: 'MarkdownV2', reply_markup: keyboard }
   )
 })
 
@@ -322,7 +329,7 @@ bot.command('users', async (ctx) => {
 
   return ctx.reply(
     `👥 *Approved Users (${users.length}):*\n\n${list}`,
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'MarkdownV2' }
   )
 })
 
@@ -345,10 +352,10 @@ bot.command('allow', async (ctx) => {
   await logAudit({ action: 'approve', adminId: ADMIN_ID, targetId, targetUsername: pending?.username, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `✅ Your access has been *approved!*\n\nSend /start to begin.`, { parse_mode: 'Markdown' })
+    await bot.api.sendMessage(targetId, `✅ Your access has been *approved!*\n\nSend /start to begin.`, { parse_mode: 'MarkdownV2' })
   } catch {}
 
-  return ctx.reply(`✅ User \`${targetId}\` approved.`, { parse_mode: 'Markdown' })
+  return ctx.reply(`✅ User \`${targetId}\` approved.`, { parse_mode: 'MarkdownV2' })
 })
 
 bot.command('revoke', async (ctx) => {
@@ -364,10 +371,10 @@ bot.command('revoke', async (ctx) => {
   await logAudit({ action: 'revoke', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `⚠️ Your bot access has been *revoked.*`, { parse_mode: 'Markdown' })
+    await bot.api.sendMessage(targetId, `⚠️ Your bot access has been *revoked.*`, { parse_mode: 'MarkdownV2' })
   } catch {}
 
-  return ctx.reply(`🔒 User \`${targetId}\` revoked.`, { parse_mode: 'Markdown' })
+  return ctx.reply(`🔒 User \`${targetId}\` revoked.`, { parse_mode: 'MarkdownV2' })
 })
 
 bot.command('ban', async (ctx) => {
@@ -384,10 +391,10 @@ bot.command('ban', async (ctx) => {
   await logAudit({ action: 'ban', adminId: ADMIN_ID, targetId, targetUsername: record?.username, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `🚫 You have been *banned* from this bot.`, { parse_mode: 'Markdown' })
+    await bot.api.sendMessage(targetId, `🚫 You have been *banned* from this bot.`, { parse_mode: 'MarkdownV2' })
   } catch {}
 
-  return ctx.reply(`🚫 User \`${targetId}\` banned permanently.`, { parse_mode: 'Markdown' })
+  return ctx.reply(`🚫 User \`${targetId}\` banned permanently.`, { parse_mode: 'MarkdownV2' })
 })
 
 bot.command('unban', async (ctx) => {
@@ -402,7 +409,7 @@ bot.command('unban', async (ctx) => {
   await unbanUser(targetId)
   await logAudit({ action: 'unban', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
 
-  return ctx.reply(`✅ User \`${targetId}\` unbanned. They can request access again.`, { parse_mode: 'Markdown' })
+  return ctx.reply(`✅ User \`${targetId}\` unbanned. They can request access again.`, { parse_mode: 'MarkdownV2' })
 })
 
 bot.command('logs', async (ctx) => {
@@ -423,7 +430,7 @@ bot.command('logs', async (ctx) => {
     return `${icon} ${l.action} → ${target}\n  ${time}`
   }).join('\n\n')
 
-  return ctx.reply(`📋 *Recent Actions:*\n\n${list}`, { parse_mode: 'Markdown' })
+  return ctx.reply(`📋 *Recent Actions:*\n\n${list}`, { parse_mode: 'MarkdownV2' })
 })
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -481,7 +488,7 @@ bot.command('help', async (ctx) => {
     `@botname <query> — AI anywhere\n` +
     `@botname imagine <prompt> — image anywhere` +
     adminSection,
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'MarkdownV2' }
   )
 })
 
@@ -602,7 +609,7 @@ bot.command('persona', async (ctx) => {
     const list = PERSONA_LIST.map(p => `• \`${p}\``).join('\n')
     return ctx.reply(
       `🎭 *Persona Settings*\n\nCurrent: \`${current}\`\n\n*Available:*\n${list}\n\nUsage: /persona <name>`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   }
 
@@ -650,7 +657,7 @@ bot.command('model', async (ctx) => {
       `• /model groq — force Groq only\n` +
       `• /model mistral — pick from list of models\n` +
       `• /model openrouter — pick from list of free models`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   }
 
@@ -660,7 +667,7 @@ bot.command('model', async (ctx) => {
     const list = modelList.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
       `🇫🇷 *Mistral Models:*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   }
 
@@ -670,7 +677,7 @@ bot.command('model', async (ctx) => {
     const list = models.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
     return ctx.reply(
       `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   }
 
@@ -761,7 +768,7 @@ bot.command('calc', async (ctx) => {
   if (!expr) return ctx.reply('Usage: /calc <expression>\nExample: /calc 2 + 2 * 10')
   try {
     const result = evaluate(expr)
-    await ctx.reply(`🧮 \`${expr}\` = *${result}*`, { parse_mode: 'Markdown' })
+    await ctx.reply(`🧮 \`${expr}\` = *${result}*`, { parse_mode: 'MarkdownV2' })
   } catch {
     await ctx.reply('❌ Invalid expression. Example: /calc 100 * 1.06') // FIX: added await
   }
@@ -781,7 +788,7 @@ bot.on('message:photo', async (ctx) => {
     const result = await chat(caption, [part], userId)
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'Markdown' })
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'MarkdownV2' })
     }
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
   } catch (err) {
@@ -801,7 +808,7 @@ bot.on('message:document', async (ctx) => {
     const result = await chat(caption, [part], userId)
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'Markdown' })
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'MarkdownV2' })
     }
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
   } catch (err) {
@@ -823,7 +830,7 @@ bot.on('message:text', async (ctx) => {
     const selected = modelList[num - 1]
     pendingMistralSelection.delete(userId)
     await setUserProvider(userId, 'mistral', selected)
-    return ctx.reply(`✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'Markdown' })
+    return ctx.reply(`✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'MarkdownV2' })
   }
 
   if (pendingModelSelection.has(userId)) {
@@ -835,7 +842,7 @@ bot.on('message:text', async (ctx) => {
     const selected = models[num - 1]
     pendingModelSelection.delete(userId)
     await setUserProvider(userId, 'openrouter', selected)
-    return ctx.reply(`✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'Markdown' })
+    return ctx.reply(`✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'MarkdownV2' })
   }
 
   const msg = await ctx.reply('💭 Thinking...')
@@ -847,7 +854,7 @@ bot.on('message:text', async (ctx) => {
 
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`, { parse_mode: 'Markdown' })
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`, { parse_mode: 'MarkdownV2' })
     }
 
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
@@ -1038,7 +1045,7 @@ bot.command('currency', async (ctx) => {
     const result = (parseFloat(amount) * rate).toFixed(2)
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
       `💱 *${amount} ${from.toUpperCase()}* = *${result} ${to.toUpperCase()}*\n_Rate: 1 ${from.toUpperCase()} = ${rate} ${to.toUpperCase()}_`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
@@ -1061,7 +1068,7 @@ bot.command('time', async (ctx) => {
     const formatted = dt.toLocaleString('en-MY', { timeZone: match, dateStyle: 'full', timeStyle: 'short' })
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
       `🕐 *${match}*\n${formatted}`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
@@ -1076,7 +1083,7 @@ bot.command('encode', async (ctx) => {
   const url = encodeURIComponent(input)
   await ctx.reply(
     `🔐 *Encoded:*\n\n*Base64:*\n\`${b64}\`\n\n*URL:*\n\`${url}\``,
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'MarkdownV2' }
   )
 })
 
@@ -1089,7 +1096,7 @@ bot.command('hash', async (ctx) => {
   const sha256 = createHash('sha256').update(input).digest('hex')
   await ctx.reply(
     `#️⃣ *Hashes:*\n\n*MD5:*\n\`${md5}\`\n\n*SHA256:*\n\`${sha256}\``,
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'MarkdownV2' }
   )
 })
 
@@ -1105,13 +1112,14 @@ bot.command('broadcast', async (ctx) => {
   for (const user of users) {
     try {
       const sanitized = sanitizeBroadcastMessage(message)
-      await bot.api.sendMessage(user.userId, `📢 *Broadcast:*\n\n${sanitized}`, { parse_mode: 'Markdown' })
+      const escaped = escapeMarkdownV2(sanitized)
+      await bot.api.sendMessage(user.userId, `📢 *Broadcast:*\n\n${escaped}`, { parse_mode: 'MarkdownV2' })
       success++
     } catch { failed++ }
   }
   await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
     `📡 *Broadcast complete*\n\n✅ Sent: ${success}\n❌ Failed: ${failed}`,
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'MarkdownV2' }
   )
 })
 
@@ -1123,7 +1131,7 @@ bot.command('stats', async (ctx) => {
     const topList = topUsers.map((u, i) => `${i + 1}. ${u.tag} — ${u.count} msgs`).join('\n')
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
       `📊 *Bot Stats*\n\n👥 Total Users: *${totalUsers}*\n💬 Total Messages: *${totalMessages}*\n\n*🏆 Top 5 Users:*\n${topList}`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'MarkdownV2' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
@@ -1139,7 +1147,7 @@ bot.command('maintenance', async (ctx) => {
     arg === 'on'
       ? '🔧 *Maintenance mode ON* — all non-admin users are blocked.'
       : '✅ *Maintenance mode OFF* — bot is back online.',
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'MarkdownV2' }
   )
 })
 
