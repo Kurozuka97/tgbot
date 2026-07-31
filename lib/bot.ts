@@ -119,45 +119,45 @@ bot.command('start', async (ctx) => {
   }
 
   if (await isAllowed(userId)) {
-    return ctx.reply(
-      `👋 *Hey! I'm your multipurpose AI assistant.*\n\n` +
-      `*AI Commands:*\n` +
-      `• /search <query> — AI-powered search\n` +
-      `• /weather <city> — current weather\n` +
-      `• /translate <lang> <text> — translate text\n` +
-      `• /summarize <url> — summarize a webpage\n` +
-      `• /explain <topic> — explain anything simply\n` +
-      `• /roast <topic> — roast anything 🔥\n` +
-      `• /roastme — send a photo to get roasted\n` +
-      `• /debate <topic> — AI argues both sides\n` +
-      `• /story <prompt> — generate a short story\n` +
-      `• /code <description> — generate code\n` +
-      `• /quote — motivational quote\n` +
-      `• /model — switch AI provider\n` +
-      `• /persona — switch AI personality\n` +
-      `• /continue — continue last response\n` +
-      `• /clear — clear conversation memory\n\n` +
-      `*Humor Commands:*\n` +
-      `• /joke — random joke 😄\n` +
-      `• /darkjoke — dark humour 😈\n` +
-      `• /dadjoke — corny dad joke 👨\n\n` +
-      `*Image Commands:*\n` +
-      `• /imagine <prompt> — generate an image\n` +
-      `• /imagine <prompt> --anime|--realistic|--pixel|--painting|--sketch\n` +
-      `• /sticker <prompt> — generate a sticker\n\n` +
-      `*Utility Commands:*\n` +
-      `• /qr <text> — generate QR code\n` +
-      `• /calc <expression> — calculator\n` +
-      `• /shorten <url> — shorten a URL\n` +
-      `• /currency <amount> <from> <to> — convert currency\n` +
-      `• /time <city> — current time anywhere\n` +
-      `• /encode <text> — Base64 & URL encode\n` +
-      `• /hash <text> — MD5 & SHA256 hash\n\n` +
-      `*Inline Mode:*\n` +
-      `• @botname <query> — AI anywhere\n` +
-      `• @botname imagine <prompt> — generate image anywhere`,
-      { parse_mode: 'MarkdownV2' }
-    )
+    const helpText = 
+      `👋 *Hey! I'm your multipurpose AI assistant.*\\n\\n` +
+      `*AI Commands:*\\n` +
+      `• /search <query> — AI-powered search\\n` +
+      `• /weather <city> — current weather\\n` +
+      `• /translate <lang> <text> — translate text\\n` +
+      `• /summarize <url> — summarize a webpage\\n` +
+      `• /explain <topic> — explain anything simply\\n` +
+      `• /roast <topic> — roast anything 🔥\\n` +
+      `• /roastme — send a photo to get roasted\\n` +
+      `• /debate <topic> — AI argues both sides\\n` +
+      `• /story <prompt> — generate a short story\\n` +
+      `• /code <description> — generate code\\n` +
+      `• /quote — motivational quote\\n` +
+      `• /model — switch AI provider\\n` +
+      `• /persona — switch AI personality\\n` +
+      `• /continue — continue last response\\n` +
+      `• /clear — clear conversation memory\\n\\n` +
+      `*Humor Commands:*\\n` +
+      `• /joke — random joke 😄\\n` +
+      `• /darkjoke — dark humour 😈\\n` +
+      `• /dadjoke — corny dad joke 👨\\n\\n` +
+      `*Image Commands:*\\n` +
+      `• /imagine <prompt> — generate an image\\n` +
+      `• /imagine <prompt> --anime|--realistic|--pixel|--painting|--sketch\\n` +
+      `• /sticker <prompt> — generate a sticker\\n\\n` +
+      `*Utility Commands:*\\n` +
+      `• /qr <text> — generate QR code\\n` +
+      `• /calc <expression> — calculator\\n` +
+      `• /shorten <url> — shorten a URL\\n` +
+      `• /currency <amount> <from> <to> — convert currency\\n` +
+      `• /time <city> — current time anywhere\\n` +
+      `• /encode <text> — Base64 & URL encode\\n` +
+      `• /hash <text> — MD5 & SHA256 hash\\n\\n` +
+      `*Inline Mode:*\\n` +
+      `• @botname <query> — AI anywhere\\n` +
+      `• @botname imagine <prompt> — generate image anywhere`;
+    
+    return ctx.reply(escapeMarkdownV2(helpText), { parse_mode: 'MarkdownV2' })
   }
 
   const result = await addPendingUser({ userId, username, firstName, languageCode })
