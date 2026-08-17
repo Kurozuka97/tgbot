@@ -1,4 +1,3 @@
-
 import { Bot, GrammyError } from 'grammy'
 
 // Configurable constants
@@ -211,6 +210,18 @@ function extractMedia(ctx: any) {
   return null
 }
 
+// Does this document/audio actually look like an audio file we'd tag?
+// (as opposed to, say, a PDF sent as a document, which should fall through
+// to the AI file-reading handler instead of being swallowed here.)
+function looksLikeAudio(media: any): boolean {
+  const mimeType: string | undefined = 'mime_type' in media ? media.mime_type : undefined
+  const fileName: string | undefined = 'file_name' in media ? media.file_name : undefined
+  const ext = fileName?.split('.').pop()?.toLowerCase()
+  if (mimeType?.toLowerCase().startsWith('audio/')) return true
+  if (ext && (LOSSLESS_EXT.has(ext) || LOSSY_EXT.has(ext))) return true
+  return false
+}
+
 export function registerLosslessHandler(bot: Bot): void {
   // Handle channel posts
   bot.on('channel_post', async (ctx) => {
@@ -221,11 +232,21 @@ export function registerLosslessHandler(bot: Bot): void {
     await processMedia(ctx.api, msg.chat.id, msg.message_id, media, msg.caption)
   })
 
-  // Handle regular messages (private chats, groups, supergroups)
-  bot.on('message', async (ctx) => {
+  // FIX: this used to be registered LAST (registerLosslessHandler(bot) was called
+  // at the very bottom of lib/bot.ts), after bot.on('message:document', ...) and
+  // bot.on('message:text', ...) were already registered. grammY runs middleware
+  // in registration order and stops at the first handler that doesn't call next(),
+  // so any FLAC/audio file sent as a Telegram "document" (very common for
+  // audiophiles) was always caught by the AI document handler first — which tried
+  // to feed a multi-MB binary audio blob to an LLM as if it were a readable file —
+  // and this tagging handler never ran. Fix: register this FIRST (bot.ts now calls
+  // registerLosslessHandler right after bot.catch()), and only consume the message
+  // when it's actually audio; anything else (PDFs, real documents, plain text)
+  // calls next() so the existing AI handlers still get a chance to run.
+  bot.on('message', async (ctx, next) => {
     const msg = ctx.message
     const media = msg.audio ?? msg.document
-    if (!media) return
+    if (!media || !looksLikeAudio(media)) return next()
 
     await processMedia(ctx.api, msg.chat.id, msg.message_id, media, msg.caption)
   })
