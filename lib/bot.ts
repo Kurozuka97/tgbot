@@ -19,6 +19,19 @@ import {
 
 const bot = new Bot(process.env.BOT_TOKEN!)
 
+// FIX: there was no global error handler at all. Without this, any thrown error
+// (e.g. a Telegram API rejection) propagates out of webhookCallback unhandled —
+// the request 500s, the "Thinking..."/"Generating..." placeholder message never
+// gets edited, and nothing is logged, so the failure is invisible.
+bot.catch((err) => {
+  const ctx = err.ctx
+  console.error(`[bot] error while handling update ${ctx.update.update_id}:`, err.error)
+})
+
+// FIX: registered here (early) instead of at the bottom of this file — see the
+// comment in lib/lossless.ts for why registration order matters.
+registerLosslessHandler(bot)
+
 // ─── Admin Setup ──────────────────────────────────────────────────────────────
 
 const ADMIN_ID = Number(process.env.ADMIN_ID)
@@ -27,23 +40,24 @@ function isAdmin(userId: number) {
   return userId === ADMIN_ID
 }
 
-// FIX: Escape special characters for MarkdownV2
-// Telegram MarkdownV2 requires escaping these characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
-function escapeMarkdownV2(text: string): string {
-  if (!text) return text
-  return text.replace(/([_\*\[\]()~`>#+\-=|{}.!])/g, '\\$1')
+// FIX: the bot previously used parse_mode: 'MarkdownV2' throughout with hand-written
+// strings that were never actually escaped for MarkdownV2's reserved characters
+// (. ! - ( ) etc all appear unescaped in plain sentences, error messages, usernames...).
+// Telegram rejects those with "can't parse entities" and the whole reply silently fails
+// (there was also no bot.catch(), so these errors just vanished). HTML mode only needs
+// & < > escaped, which is far less fragile — so the whole bot now uses parse_mode: 'HTML'
+// consistently (matching what lib/ai.ts already outputs) instead of MarkdownV2.
+function escapeHTML(text: unknown): string {
+  if (text === null || text === undefined) return ''
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// Broadcast messages come from the admin, typed as plain text with optional
+// *bold* markers for emphasis. Escape everything first (so stray < > & can't break
+// the HTML parse), then turn *bold* into <b>bold</b>.
 function sanitizeBroadcastMessage(text: string): string {
-  // Strip decorative HTML tags (keep inner text)
-  text = text.replace(/<\/?(i|u|s|em|strong|span|div|p|br|hr|table|tr|td|th|ul|ol|li|h[1-6])\b[^>]*>/gi, '')
-  // Convert HTML to Telegram MarkdownV2 equivalents
-  text = text.replace(/<b>/gi, '*').replace(/<\/b>/gi, '*')
-  text = text.replace(/<code>/gi, '`').replace(/<\/code>/gi, '`')
-  text = text.replace(/<pre>/gi, '```').replace(/<\/pre>/gi, '```')
-  // Convert <a href="url">text</a> → [text](url)
-  text = text.replace(/<a\s+href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, '[$2]($1)')
-  return text
+  const escaped = escapeHTML(text)
+  return escaped.replace(/\*(.+?)\*/g, '<b>$1</b>')
 }
 
 // FIX: ban check now included in isAllowed so it's enforced everywhere
@@ -119,45 +133,45 @@ bot.command('start', async (ctx) => {
   }
 
   if (await isAllowed(userId)) {
-    const helpText = 
-      `👋 *Hey! I'm your multipurpose AI assistant.*\\n\\n` +
-      `*AI Commands:*\\n` +
-      `• /search <query> — AI-powered search\\n` +
-      `• /weather <city> — current weather\\n` +
-      `• /translate <lang> <text> — translate text\\n` +
-      `• /summarize <url> — summarize a webpage\\n` +
-      `• /explain <topic> — explain anything simply\\n` +
-      `• /roast <topic> — roast anything 🔥\\n` +
-      `• /roastme — send a photo to get roasted\\n` +
-      `• /debate <topic> — AI argues both sides\\n` +
-      `• /story <prompt> — generate a short story\\n` +
-      `• /code <description> — generate code\\n` +
-      `• /quote — motivational quote\\n` +
-      `• /model — switch AI provider\\n` +
-      `• /persona — switch AI personality\\n` +
-      `• /continue — continue last response\\n` +
-      `• /clear — clear conversation memory\\n\\n` +
-      `*Humor Commands:*\\n` +
-      `• /joke — random joke 😄\\n` +
-      `• /darkjoke — dark humour 😈\\n` +
-      `• /dadjoke — corny dad joke 👨\\n\\n` +
-      `*Image Commands:*\\n` +
-      `• /imagine <prompt> — generate an image\\n` +
-      `• /imagine <prompt> --anime|--realistic|--pixel|--painting|--sketch\\n` +
-      `• /sticker <prompt> — generate a sticker\\n\\n` +
-      `*Utility Commands:*\\n` +
-      `• /qr <text> — generate QR code\\n` +
-      `• /calc <expression> — calculator\\n` +
-      `• /shorten <url> — shorten a URL\\n` +
-      `• /currency <amount> <from> <to> — convert currency\\n` +
-      `• /time <city> — current time anywhere\\n` +
-      `• /encode <text> — Base64 & URL encode\\n` +
-      `• /hash <text> — MD5 & SHA256 hash\\n\\n` +
-      `*Inline Mode:*\\n` +
-      `• @botname <query> — AI anywhere\\n` +
-      `• @botname imagine <prompt> — generate image anywhere`;
-    
-    return ctx.reply(escapeMarkdownV2(helpText), { parse_mode: 'MarkdownV2' })
+    const helpText =
+      `👋 <b>Hey! I'm your multipurpose AI assistant.</b>\n\n` +
+      `<b>AI Commands:</b>\n` +
+      `• /search &lt;query&gt; — AI-powered search\n` +
+      `• /weather &lt;city&gt; — current weather\n` +
+      `• /translate &lt;lang&gt; &lt;text&gt; — translate text\n` +
+      `• /summarize &lt;url&gt; — summarize a webpage\n` +
+      `• /explain &lt;topic&gt; — explain anything simply\n` +
+      `• /roast &lt;topic&gt; — roast anything 🔥\n` +
+      `• /roastme — send a photo to get roasted\n` +
+      `• /debate &lt;topic&gt; — AI argues both sides\n` +
+      `• /story &lt;prompt&gt; — generate a short story\n` +
+      `• /code &lt;description&gt; — generate code\n` +
+      `• /quote — motivational quote\n` +
+      `• /model — switch AI provider\n` +
+      `• /persona — switch AI personality\n` +
+      `• /continue — continue last response\n` +
+      `• /clear — clear conversation memory\n\n` +
+      `<b>Humor Commands:</b>\n` +
+      `• /joke — random joke 😄\n` +
+      `• /darkjoke — dark humour 😈\n` +
+      `• /dadjoke — corny dad joke 👨\n\n` +
+      `<b>Image Commands:</b>\n` +
+      `• /imagine &lt;prompt&gt; — generate an image\n` +
+      `• /imagine &lt;prompt&gt; --anime|--realistic|--pixel|--painting|--sketch\n` +
+      `• /sticker &lt;prompt&gt; — generate a sticker\n\n` +
+      `<b>Utility Commands:</b>\n` +
+      `• /qr &lt;text&gt; — generate QR code\n` +
+      `• /calc &lt;expression&gt; — calculator\n` +
+      `• /shorten &lt;url&gt; — shorten a URL\n` +
+      `• /currency &lt;amount&gt; &lt;from&gt; &lt;to&gt; — convert currency\n` +
+      `• /time &lt;city&gt; — current time anywhere\n` +
+      `• /encode &lt;text&gt; — Base64 & URL encode\n` +
+      `• /hash &lt;text&gt; — MD5 & SHA256 hash\n\n` +
+      `<b>Inline Mode:</b>\n` +
+      `• @botname &lt;query&gt; — AI anywhere\n` +
+      `• @botname imagine &lt;prompt&gt; — generate image anywhere`;
+
+    return ctx.reply(helpText, { parse_mode: 'HTML' })
   }
 
   const result = await addPendingUser({ userId, username, firstName, languageCode })
@@ -170,10 +184,10 @@ bot.command('start', async (ctx) => {
   }
 
   await ctx.reply(
-    `👋 Hey *${firstName}*!\n\n` +
+    `👋 Hey <b>${escapeHTML(firstName)}</b>!\n\n` +
     `Your access request has been sent to the admin. ` +
     `You'll be notified once approved. ⏳`,
-    { parse_mode: 'MarkdownV2' }
+    { parse_mode: 'HTML' }
   )
 
   const userTag = username ? `@${username}` : firstName
@@ -185,11 +199,11 @@ bot.command('start', async (ctx) => {
 
   await bot.api.sendMessage(
     ADMIN_ID,
-    `🔔 *New Access Request*\n\n` +
-    `👤 Name: ${userTag}\n` +
-    `🆔 ID: \`${userId}\`\n` +
-    `🌐 Language: ${languageCode ?? 'unknown'}`,
-    { parse_mode: 'MarkdownV2', reply_markup: keyboard }
+    `🔔 <b>New Access Request</b>\n\n` +
+    `👤 Name: ${escapeHTML(userTag)}\n` +
+    `🆔 ID: <code>${userId}</code>\n` +
+    `🌐 Language: ${escapeHTML(languageCode ?? 'unknown')}`,
+    { parse_mode: 'HTML', reply_markup: keyboard }
   )
 })
 
@@ -215,13 +229,13 @@ bot.callbackQuery(/^approve:(\d+)$/, async (ctx) => {
   try {
     await bot.api.sendMessage(
       targetId,
-      `✅ Your access has been *approved!*\n\nSend /start to begin.`,
-      { parse_mode: 'MarkdownV2' }
+      `✅ Your access has been <b>approved!</b>\n\nSend /start to begin.`,
+      { parse_mode: 'HTML' }
     )
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`✅ *Approved:* ${name} (\`${targetId}\`)`, { parse_mode: 'MarkdownV2' })
+  await ctx.editMessageText(`✅ <b>Approved:</b> ${escapeHTML(name)} (<code>${targetId}</code>)`, { parse_mode: 'HTML' })
   await ctx.answerCallbackQuery('✅ User approved')
 })
 
@@ -240,13 +254,13 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
   try {
     await bot.api.sendMessage(
       targetId,
-      `❌ Your access request has been *rejected.*\n\nContact the admin if you think this is a mistake.`,
-      { parse_mode: 'MarkdownV2' }
+      `❌ Your access request has been <b>rejected.</b>\n\nContact the admin if you think this is a mistake.`,
+      { parse_mode: 'HTML' }
     )
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`❌ *Rejected:* ${name} (\`${targetId}\`)`, { parse_mode: 'MarkdownV2' })
+  await ctx.editMessageText(`❌ <b>Rejected:</b> ${escapeHTML(name)} (<code>${targetId}</code>)`, { parse_mode: 'HTML' })
   await ctx.answerCallbackQuery('❌ User rejected')
 })
 
@@ -268,13 +282,13 @@ bot.callbackQuery(/^ban:(\d+)$/, async (ctx) => {
   try {
     await bot.api.sendMessage(
       targetId,
-      `🚫 You have been *banned* from this bot.`,
-      { parse_mode: 'MarkdownV2' }
+      `🚫 You have been <b>banned</b> from this bot.`,
+      { parse_mode: 'HTML' }
     )
   } catch {}
 
   const name = pending?.username ? `@${pending.username}` : pending?.firstName ?? String(targetId)
-  await ctx.editMessageText(`🚫 *Banned:* ${name} (\`${targetId}\`)`, { parse_mode: 'MarkdownV2' })
+  await ctx.editMessageText(`🚫 <b>Banned:</b> ${escapeHTML(name)} (<code>${targetId}</code>)`, { parse_mode: 'HTML' })
   await ctx.answerCallbackQuery('🚫 User banned')
 })
 
@@ -290,9 +304,9 @@ bot.command('admin', async (ctx) => {
   }
 
   const list = pending.map(u => {
-    const tag = u.username ? `@${u.username}` : u.firstName ?? 'Unknown'
-    const count = u.requestCount > 1 ? ` _(${u.requestCount}x requests)_` : ''
-    return `• ${tag}${count}\n  ID: \`${u.userId}\`\n  Requested: ${formatDate(u.requestedAt)}`
+    const tag = escapeHTML(u.username ? `@${u.username}` : u.firstName ?? 'Unknown')
+    const count = u.requestCount > 1 ? ` <i>(${u.requestCount}x requests)</i>` : ''
+    return `• ${tag}${count}\n  ID: <code>${u.userId}</code>\n  Requested: ${escapeHTML(formatDate(u.requestedAt))}`
   }).join('\n\n')
 
   const keyboard = new InlineKeyboard()
@@ -307,8 +321,8 @@ bot.command('admin', async (ctx) => {
   })
 
   return ctx.reply(
-    `👥 *Pending Requests (${pending.length}):*\n\n${list}`,
-    { parse_mode: 'MarkdownV2', reply_markup: keyboard }
+    `👥 <b>Pending Requests (${pending.length}):</b>\n\n${list}`,
+    { parse_mode: 'HTML', reply_markup: keyboard }
   )
 })
 
@@ -322,14 +336,14 @@ bot.command('users', async (ctx) => {
   }
 
   const list = users.map(u => {
-    const tag = u.username ? `@${u.username}` : u.firstName ?? 'Unknown'
+    const tag = escapeHTML(u.username ? `@${u.username}` : u.firstName ?? 'Unknown')
     const lastSeen = u.lastActive ? formatDate(u.lastActive) : 'never'
-    return `• ${tag} — \`${u.userId}\`\n  💬 ${u.messageCount} msgs · Last: ${lastSeen}`
+    return `• ${tag} — <code>${u.userId}</code>\n  💬 ${u.messageCount} msgs · Last: ${escapeHTML(lastSeen)}`
   }).join('\n\n')
 
   return ctx.reply(
-    `👥 *Approved Users (${users.length}):*\n\n${list}`,
-    { parse_mode: 'MarkdownV2' }
+    `👥 <b>Approved Users (${users.length}):</b>\n\n${list}`,
+    { parse_mode: 'HTML' }
   )
 })
 
@@ -352,10 +366,10 @@ bot.command('allow', async (ctx) => {
   await logAudit({ action: 'approve', adminId: ADMIN_ID, targetId, targetUsername: pending?.username, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `✅ Your access has been *approved!*\n\nSend /start to begin.`, { parse_mode: 'MarkdownV2' })
+    await bot.api.sendMessage(targetId, `✅ Your access has been <b>approved!</b>\n\nSend /start to begin.`, { parse_mode: 'HTML' })
   } catch {}
 
-  return ctx.reply(`✅ User \`${targetId}\` approved.`, { parse_mode: 'MarkdownV2' })
+  return ctx.reply(`✅ User <code>${targetId}</code> approved.`, { parse_mode: 'HTML' })
 })
 
 bot.command('revoke', async (ctx) => {
@@ -371,10 +385,10 @@ bot.command('revoke', async (ctx) => {
   await logAudit({ action: 'revoke', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `⚠️ Your bot access has been *revoked.*`, { parse_mode: 'MarkdownV2' })
+    await bot.api.sendMessage(targetId, `⚠️ Your bot access has been <b>revoked.</b>`, { parse_mode: 'HTML' })
   } catch {}
 
-  return ctx.reply(`🔒 User \`${targetId}\` revoked.`, { parse_mode: 'MarkdownV2' })
+  return ctx.reply(`🔒 User <code>${targetId}</code> revoked.`, { parse_mode: 'HTML' })
 })
 
 bot.command('ban', async (ctx) => {
@@ -391,10 +405,10 @@ bot.command('ban', async (ctx) => {
   await logAudit({ action: 'ban', adminId: ADMIN_ID, targetId, targetUsername: record?.username, timestamp: Date.now() })
 
   try {
-    await bot.api.sendMessage(targetId, `🚫 You have been *banned* from this bot.`, { parse_mode: 'MarkdownV2' })
+    await bot.api.sendMessage(targetId, `🚫 You have been <b>banned</b> from this bot.`, { parse_mode: 'HTML' })
   } catch {}
 
-  return ctx.reply(`🚫 User \`${targetId}\` banned permanently.`, { parse_mode: 'MarkdownV2' })
+  return ctx.reply(`🚫 User <code>${targetId}</code> banned permanently.`, { parse_mode: 'HTML' })
 })
 
 bot.command('unban', async (ctx) => {
@@ -409,7 +423,7 @@ bot.command('unban', async (ctx) => {
   await unbanUser(targetId)
   await logAudit({ action: 'unban', adminId: ADMIN_ID, targetId, timestamp: Date.now() })
 
-  return ctx.reply(`✅ User \`${targetId}\` unbanned. They can request access again.`, { parse_mode: 'MarkdownV2' })
+  return ctx.reply(`✅ User <code>${targetId}</code> unbanned. They can request access again.`, { parse_mode: 'HTML' })
 })
 
 bot.command('logs', async (ctx) => {
@@ -425,12 +439,12 @@ bot.command('logs', async (ctx) => {
 
   const list = logs.map(l => {
     const icon = icons[l.action] ?? '•'
-    const target = l.targetUsername ? `@${l.targetUsername}` : `\`${l.targetId}\``
-    const time = formatDate(l.timestamp)
+    const target = l.targetUsername ? escapeHTML(`@${l.targetUsername}`) : `<code>${l.targetId}</code>`
+    const time = escapeHTML(formatDate(l.timestamp))
     return `${icon} ${l.action} → ${target}\n  ${time}`
   }).join('\n\n')
 
-  return ctx.reply(`📋 *Recent Actions:*\n\n${list}`, { parse_mode: 'MarkdownV2' })
+  return ctx.reply(`📋 <b>Recent Actions:</b>\n\n${list}`, { parse_mode: 'HTML' })
 })
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -438,57 +452,57 @@ bot.command('logs', async (ctx) => {
 bot.command('help', async (ctx) => {
   const userId = ctx.from?.id ?? 0
   const adminSection = isAdmin(userId)
-    ? `\n\n*👑 Admin:*\n` +
+    ? `\n\n<b>👑 Admin:</b>\n` +
       `/admin — pending requests\n` +
       `/users — list approved users\n` +
-      `/allow <id> — approve user\n` +
-      `/revoke <id> — remove access\n` +
-      `/ban <id> — permanent ban\n` +
-      `/unban <id> — unban user\n` +
+      `/allow &lt;id&gt; — approve user\n` +
+      `/revoke &lt;id&gt; — remove access\n` +
+      `/ban &lt;id&gt; — permanent ban\n` +
+      `/unban &lt;id&gt; — unban user\n` +
       `/logs — audit log\n` +
-      `/broadcast <message> — message all users\n` +
+      `/broadcast &lt;message&gt; — message all users\n` +
       `/stats — usage statistics\n` +
       `/maintenance on|off — lock/unlock bot\n`
     : ''
 
   await ctx.reply(
-    `*Available Commands:*\n\n` +
-    `*AI:*\n` +
-    `/search <query> — AI-powered search\n` +
-    `/weather <city> — current weather\n` +
-    `/translate <lang> <text> — e.g. /translate ms hello\n` +
-    `/summarize <url> — summarize a webpage\n` +
-    `/explain <topic> — explain anything simply\n` +
-    `/roast <topic> — roast anything 🔥\n` +
+    `<b>Available Commands:</b>\n\n` +
+    `<b>AI:</b>\n` +
+    `/search &lt;query&gt; — AI-powered search\n` +
+    `/weather &lt;city&gt; — current weather\n` +
+    `/translate &lt;lang&gt; &lt;text&gt; — e.g. /translate ms hello\n` +
+    `/summarize &lt;url&gt; — summarize a webpage\n` +
+    `/explain &lt;topic&gt; — explain anything simply\n` +
+    `/roast &lt;topic&gt; — roast anything 🔥\n` +
     `/roastme — send photo to get roasted\n` +
-    `/debate <topic> — AI argues both sides\n` +
-    `/story <prompt> — generate a short story\n` +
-    `/code <description> — generate code\n` +
+    `/debate &lt;topic&gt; — AI argues both sides\n` +
+    `/story &lt;prompt&gt; — generate a short story\n` +
+    `/code &lt;description&gt; — generate code\n` +
     `/quote — motivational quote\n` +
     `/model — switch AI provider\n` +
     `/persona — switch AI personality\n` +
     `/continue — continue last response\n` +
     `/clear — clear conversation memory\n\n` +
-    `*Humor:*\n` +
+    `<b>Humor:</b>\n` +
     `/joke — random joke 😄\n` +
     `/darkjoke — dark humour 😈\n` +
     `/dadjoke — corny dad joke 👨\n\n` +
-    `*Image:*\n` +
-    `/imagine <prompt> [--anime|--realistic|--pixel|--painting|--sketch]\n` +
-    `/sticker <prompt> — generate sticker\n\n` +
-    `*Utility:*\n` +
-    `/qr <text> — generate QR code\n` +
-    `/calc <expression> — calculator\n` +
-    `/shorten <url> — shorten a URL\n` +
-    `/currency <amount> <from> <to> — convert currency\n` +
-    `/time <city> — current time anywhere\n` +
-    `/encode <text> — Base64 & URL encode\n` +
-    `/hash <text> — MD5 & SHA256 hash\n\n` +
-    `*Inline:*\n` +
-    `@botname <query> — AI anywhere\n` +
-    `@botname imagine <prompt> — image anywhere` +
+    `<b>Image:</b>\n` +
+    `/imagine &lt;prompt&gt; [--anime|--realistic|--pixel|--painting|--sketch]\n` +
+    `/sticker &lt;prompt&gt; — generate sticker\n\n` +
+    `<b>Utility:</b>\n` +
+    `/qr &lt;text&gt; — generate QR code\n` +
+    `/calc &lt;expression&gt; — calculator\n` +
+    `/shorten &lt;url&gt; — shorten a URL\n` +
+    `/currency &lt;amount&gt; &lt;from&gt; &lt;to&gt; — convert currency\n` +
+    `/time &lt;city&gt; — current time anywhere\n` +
+    `/encode &lt;text&gt; — Base64 & URL encode\n` +
+    `/hash &lt;text&gt; — MD5 & SHA256 hash\n\n` +
+    `<b>Inline:</b>\n` +
+    `@botname &lt;query&gt; — AI anywhere\n` +
+    `@botname imagine &lt;prompt&gt; — image anywhere` +
     adminSection,
-    { parse_mode: 'MarkdownV2' }
+    { parse_mode: 'HTML' }
   )
 })
 
@@ -606,19 +620,19 @@ bot.command('persona', async (ctx) => {
 
   if (!arg) {
     const current = await getPersona(userId)
-    const list = PERSONA_LIST.map(p => `• \`${p}\``).join('\n')
+    const list = PERSONA_LIST.map(p => `• <code>${p}</code>`).join('\n')
     return ctx.reply(
-      `🎭 *Persona Settings*\n\nCurrent: \`${current}\`\n\n*Available:*\n${list}\n\nUsage: /persona <name>`,
-      { parse_mode: 'MarkdownV2' }
+      `🎭 <b>Persona Settings</b>\n\nCurrent: <code>${escapeHTML(current)}</code>\n\n<b>Available:</b>\n${list}\n\nUsage: /persona &lt;name&gt;`,
+      { parse_mode: 'HTML' }
     )
   }
 
   if (!PERSONA_LIST.includes(arg)) {
-    return ctx.reply(`❌ Unknown persona. Available: ${PERSONA_LIST.map(p => `\`${p}\``).join(', ')}`)
+    return ctx.reply(`❌ Unknown persona. Available: ${PERSONA_LIST.map(p => `<code>${p}</code>`).join(', ')}`, { parse_mode: 'HTML' })
   }
 
   await setPersona(userId, arg)
-  await ctx.reply(`🎭 Persona set to *${arg}*`) // FIX: added await
+  await ctx.reply(`🎭 Persona set to <b>${escapeHTML(arg)}</b>`, { parse_mode: 'HTML' })
 })
 
 bot.command('continue', async (ctx) => {
@@ -650,34 +664,34 @@ bot.command('model', async (ctx) => {
 
   if (!arg) {
     const pref = await getUserProvider(userId)
-    const current = pref.model ? `${pref.provider} → \`${pref.model}\`` : `\`${pref.provider}\``
+    const current = pref.model ? `${escapeHTML(pref.provider)} → <code>${escapeHTML(pref.model)}</code>` : `<code>${escapeHTML(pref.provider)}</code>`
     return ctx.reply(
-      `🤖 *AI Provider Settings*\n\nCurrent: ${current}\n\n*Options:*\n` +
+      `🤖 <b>AI Provider Settings</b>\n\nCurrent: ${current}\n\n<b>Options:</b>\n` +
       `• /model auto — smart fallback (Groq → Mistral → OpenRouter)\n` +
       `• /model groq — force Groq only\n` +
       `• /model mistral — pick from list of models\n` +
       `• /model openrouter — pick from list of free models`,
-      { parse_mode: 'MarkdownV2' }
+      { parse_mode: 'HTML' }
     )
   }
 
   if (arg === 'mistral') {
     const modelList = Object.keys(MISTRAL_MODELS)
     pendingMistralSelection.set(userId, true)
-    const list = modelList.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
+    const list = modelList.map((m, i) => `${i + 1}. <code>${m}</code>`).join('\n')
     return ctx.reply(
-      `🇫🇷 *Mistral Models:*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
-      { parse_mode: 'MarkdownV2' }
+      `🇫🇷 <b>Mistral Models:</b>\n\n${list}\n\nReply with the <b>number</b> to select.\nType /model auto to cancel.`,
+      { parse_mode: 'HTML' }
     )
   }
 
   if (arg === 'openrouter') {
     const models = await getFreeModelList()
     pendingModelSelection.set(userId, models)
-    const list = models.map((m, i) => `${i + 1}. \`${m}\``).join('\n')
+    const list = models.map((m, i) => `${i + 1}. <code>${escapeHTML(m)}</code>`).join('\n')
     return ctx.reply(
-      `🔀 *OpenRouter Free Models (${models.length}):*\n\n${list}\n\nReply with the *number* to select.\nType /model auto to cancel.`,
-      { parse_mode: 'MarkdownV2' }
+      `🔀 <b>OpenRouter Free Models (${models.length}):</b>\n\n${list}\n\nReply with the <b>number</b> to select.\nType /model auto to cancel.`,
+      { parse_mode: 'HTML' }
     )
   }
 
@@ -691,7 +705,7 @@ bot.command('model', async (ctx) => {
     auto: '🔄 Auto fallback (recommended)',
     groq: '⚡ Groq (fastest)',
   }
-  await ctx.reply(`✅ Provider set to *${arg}*\n${labels[arg]}`) // FIX: added await
+  await ctx.reply(`✅ Provider set to <b>${escapeHTML(arg)}</b>\n${labels[arg]}`, { parse_mode: 'HTML' })
 })
 
 // ─── Humor Commands ───────────────────────────────────────────────────────────
@@ -768,7 +782,7 @@ bot.command('calc', async (ctx) => {
   if (!expr) return ctx.reply('Usage: /calc <expression>\nExample: /calc 2 + 2 * 10')
   try {
     const result = evaluate(expr)
-    await ctx.reply(`🧮 \`${expr}\` = *${result}*`, { parse_mode: 'MarkdownV2' })
+    await ctx.reply(`🧮 <code>${escapeHTML(expr)}</code> = <b>${escapeHTML(result)}</b>`, { parse_mode: 'HTML' })
   } catch {
     await ctx.reply('❌ Invalid expression. Example: /calc 100 * 1.06') // FIX: added await
   }
@@ -788,7 +802,7 @@ bot.on('message:photo', async (ctx) => {
     const result = await chat(caption, [part], userId)
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'MarkdownV2' })
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User <code>${userId}</code> is active for the first time!`, { parse_mode: 'HTML' })
     }
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
   } catch (err) {
@@ -808,7 +822,7 @@ bot.on('message:document', async (ctx) => {
     const result = await chat(caption, [part], userId)
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` is active for the first time!`, { parse_mode: 'MarkdownV2' })
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User <code>${userId}</code> is active for the first time!`, { parse_mode: 'HTML' })
     }
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
   } catch (err) {
@@ -830,7 +844,7 @@ bot.on('message:text', async (ctx) => {
     const selected = modelList[num - 1]
     pendingMistralSelection.delete(userId)
     await setUserProvider(userId, 'mistral', selected)
-    return ctx.reply(`✅ *Mistral model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'MarkdownV2' })
+    return ctx.reply(`✅ <b>Mistral model selected!</b>\n\n<code>${escapeHTML(selected)}</code>\n\nAll messages will use this model now.`, { parse_mode: 'HTML' })
   }
 
   if (pendingModelSelection.has(userId)) {
@@ -842,7 +856,7 @@ bot.on('message:text', async (ctx) => {
     const selected = models[num - 1]
     pendingModelSelection.delete(userId)
     await setUserProvider(userId, 'openrouter', selected)
-    return ctx.reply(`✅ *Model selected!*\n\n\`${selected}\`\n\nAll messages will use this model now.`, { parse_mode: 'MarkdownV2' })
+    return ctx.reply(`✅ <b>Model selected!</b>\n\n<code>${escapeHTML(selected)}</code>\n\nAll messages will use this model now.`, { parse_mode: 'HTML' })
   }
 
   const msg = await ctx.reply('💭 Thinking...')
@@ -854,7 +868,7 @@ bot.on('message:text', async (ctx) => {
 
     const isFirst = await trackUsage(userId)
     if (isFirst && !isAdmin(userId)) {
-      await bot.api.sendMessage(ADMIN_ID, `🟢 User \`${userId}\` sent their first message!`, { parse_mode: 'MarkdownV2' })
+      await bot.api.sendMessage(ADMIN_ID, `🟢 User <code>${userId}</code> sent their first message!`, { parse_mode: 'HTML' })
     }
 
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, result, { parse_mode: 'HTML' })
@@ -1044,34 +1058,34 @@ bot.command('currency', async (ctx) => {
     if (!rate) throw new Error(`Unknown currency: ${to.toUpperCase()}`)
     const result = (parseFloat(amount) * rate).toFixed(2)
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-      `💱 *${amount} ${from.toUpperCase()}* = *${result} ${to.toUpperCase()}*\n_Rate: 1 ${from.toUpperCase()} = ${rate} ${to.toUpperCase()}_`,
-      { parse_mode: 'MarkdownV2' }
+      `💱 <b>${escapeHTML(amount)} ${escapeHTML(from.toUpperCase())}</b> = <b>${result} ${escapeHTML(to.toUpperCase())}</b>\n<i>Rate: 1 ${escapeHTML(from.toUpperCase())} = ${rate} ${escapeHTML(to.toUpperCase())}</i>`,
+      { parse_mode: 'HTML' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
   }
 })
 
+// FIX: worldtimeapi.org has been permanently shut down (sunset by its maintainer),
+// so this command was 100% broken — every call threw "City not found" or a fetch
+// error. IANA timezone data ships with Node/V8 itself via Intl, so this no longer
+// depends on any external API at all.
 bot.command('time', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
   const city = ctx.match.trim()
   if (!city) return ctx.reply('Usage: /time <city>\nExample: /time Tokyo')
-  const msg = await ctx.reply('🕐 Checking time...')
   try {
-    const res = await fetch(`https://worldtimeapi.org/api/timezone`)
-    const zones: string[] = await res.json()
-    const match = zones.find(z => z.toLowerCase().includes(city.toLowerCase()))
-    if (!match) throw new Error(`City not found: ${city}`)
-    const tzRes = await fetch(`https://worldtimeapi.org/api/timezone/${match}`)
-    const tzData = await tzRes.json()
-    const dt = new Date(tzData.datetime)
-    const formatted = dt.toLocaleString('en-MY', { timeZone: match, dateStyle: 'full', timeStyle: 'short' })
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-      `🕐 *${match}*\n${formatted}`,
-      { parse_mode: 'MarkdownV2' }
-    )
+    const zones: string[] = (Intl as any).supportedValuesOf('timeZone')
+    const needle = city.toLowerCase().replace(/\s+/g, '_')
+    const match =
+      zones.find(z => z.split('/').pop()?.toLowerCase() === needle) ??
+      zones.find(z => z.toLowerCase().includes(needle))
+    if (!match) return ctx.reply(`❌ Unknown city/timezone: ${city}`)
+    const now = new Date()
+    const formatted = now.toLocaleString('en-MY', { timeZone: match, dateStyle: 'full', timeStyle: 'short' })
+    await ctx.reply(`🕐 <b>${escapeHTML(match)}</b>\n${escapeHTML(formatted)}`, { parse_mode: 'HTML' })
   } catch (err) {
-    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
+    await ctx.reply(`❌ Failed: ${escapeHTML(String(err))}`)
   }
 })
 
@@ -1082,8 +1096,8 @@ bot.command('encode', async (ctx) => {
   const b64 = Buffer.from(input).toString('base64')
   const url = encodeURIComponent(input)
   await ctx.reply(
-    `🔐 *Encoded:*\n\n*Base64:*\n\`${b64}\`\n\n*URL:*\n\`${url}\``,
-    { parse_mode: 'MarkdownV2' }
+    `🔐 <b>Encoded:</b>\n\n<b>Base64:</b>\n<code>${escapeHTML(b64)}</code>\n\n<b>URL:</b>\n<code>${escapeHTML(url)}</code>`,
+    { parse_mode: 'HTML' }
   )
 })
 
@@ -1095,8 +1109,8 @@ bot.command('hash', async (ctx) => {
   const md5 = createHash('md5').update(input).digest('hex')
   const sha256 = createHash('sha256').update(input).digest('hex')
   await ctx.reply(
-    `#️⃣ *Hashes:*\n\n*MD5:*\n\`${md5}\`\n\n*SHA256:*\n\`${sha256}\``,
-    { parse_mode: 'MarkdownV2' }
+    `#️⃣ <b>Hashes:</b>\n\n<b>MD5:</b>\n<code>${md5}</code>\n\n<b>SHA256:</b>\n<code>${sha256}</code>`,
+    { parse_mode: 'HTML' }
   )
 })
 
@@ -1109,17 +1123,16 @@ bot.command('broadcast', async (ctx) => {
   const users = await getApprovedUsers()
   const msg = await ctx.reply(`📡 Broadcasting to ${users.length} users...`)
   let success = 0, failed = 0
+  const sanitized = sanitizeBroadcastMessage(message)
   for (const user of users) {
     try {
-      const sanitized = sanitizeBroadcastMessage(message)
-      const escaped = escapeMarkdownV2(sanitized)
-      await bot.api.sendMessage(user.userId, `📢 *Broadcast:*\n\n${escaped}`, { parse_mode: 'MarkdownV2' })
+      await bot.api.sendMessage(user.userId, `📢 <b>Broadcast:</b>\n\n${sanitized}`, { parse_mode: 'HTML' })
       success++
     } catch { failed++ }
   }
   await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-    `📡 *Broadcast complete*\n\n✅ Sent: ${success}\n❌ Failed: ${failed}`,
-    { parse_mode: 'MarkdownV2' }
+    `📡 <b>Broadcast complete</b>\n\n✅ Sent: ${success}\n❌ Failed: ${failed}`,
+    { parse_mode: 'HTML' }
   )
 })
 
@@ -1128,10 +1141,10 @@ bot.command('stats', async (ctx) => {
   const msg = await ctx.reply('📊 Fetching stats...')
   try {
     const { totalUsers, totalMessages, topUsers } = await getStats()
-    const topList = topUsers.map((u, i) => `${i + 1}. ${u.tag} — ${u.count} msgs`).join('\n')
+    const topList = topUsers.map((u, i) => `${i + 1}. ${escapeHTML(u.tag)} — ${u.count} msgs`).join('\n')
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-      `📊 *Bot Stats*\n\n👥 Total Users: *${totalUsers}*\n💬 Total Messages: *${totalMessages}*\n\n*🏆 Top 5 Users:*\n${topList}`,
-      { parse_mode: 'MarkdownV2' }
+      `📊 <b>Bot Stats</b>\n\n👥 Total Users: <b>${totalUsers}</b>\n💬 Total Messages: <b>${totalMessages}</b>\n\n<b>🏆 Top 5 Users:</b>\n${topList}`,
+      { parse_mode: 'HTML' }
     )
   } catch (err) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${String(err)}`)
@@ -1145,12 +1158,10 @@ bot.command('maintenance', async (ctx) => {
   await setMaintenance(arg === 'on')
   await ctx.reply(
     arg === 'on'
-      ? '🔧 *Maintenance mode ON* — all non-admin users are blocked.'
-      : '✅ *Maintenance mode OFF* — bot is back online.',
-    { parse_mode: 'MarkdownV2' }
+      ? '🔧 <b>Maintenance mode ON</b> — all non-admin users are blocked.'
+      : '✅ <b>Maintenance mode OFF</b> — bot is back online.',
+    { parse_mode: 'HTML' }
   )
 })
-
-registerLosslessHandler(bot)
 
 export default bot
