@@ -274,7 +274,12 @@ function sanitizeHTML(text: string): string {
   const allowed = new Set(['b', 'code', 'pre', 'a', 'tg-spoiler']);
 
   // 0. Strip MarkdownV2 backslash escapes that models sometimes output
-  text = text.replace(/\\([_*[\]()]~`>#+\-=|{}.!\\])/g, '$1');
+  // FIX: the character class here was malformed — `[_*[\]()]` closed right after
+  // `()`, so everything after it (`~`>#+\-=|{}.!\\`) was matched as literal
+  // characters/alternation outside the class instead of being part of it, e.g. the
+  // bare `|` inside the group turned it into an alternation. Wrapping the full set
+  // inside a single character class fixes it.
+  text = text.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, '$1');
 
   // 1. Convert Markdown code blocks FIRST, and escape their content
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`);
