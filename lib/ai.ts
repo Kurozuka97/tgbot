@@ -6,10 +6,12 @@ import { db } from './firebase'
 const HTML_FORMAT_RULE = `
 
 FORMATTING RULES (mandatory — never break these):
-- Use Telegram HTML only. Never use Markdown (**bold**, _italic_, \`code\`, ##heading).
+- Use Telegram HTML only. Never use Markdown (**bold**, _italic_, \`code\`, ##heading, [text](url)).
 - <b>bold</b> for key terms, important words, section headers.
 - <code>code</code> for inline code, commands, filenames, variables.
 - <pre>code block</pre> for multi-line code — always use this for code snippets.
+- For links, write <a href="url">link text</a> directly. Never put a bare URL or a
+  Markdown-style [text](url) link inside a \`\`\` code fence — a link is not code.
 - Do NOT use <i>, <u>, <s>, <em> tags — they will be stripped and make output look messy.
 - Plain & must be written as &amp;, plain < as &lt;, plain > as &gt;.
 - Keep responses concise and scannable. Use short paragraphs.
@@ -281,6 +283,13 @@ function sanitizeHTML(text: string): string {
   // inside a single character class fixes it.
   text = text.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, '$1');
 
+  // 0.5 Some models wrap a plain link in a fenced code block for no reason
+  // (often with a bogus "```undefined" language tag) instead of following the
+  // "links use <a href>, not code fences" rule. Unwrap those before the real
+  // code-block handling below, so the link gets converted properly instead of
+  // showing up as a literal, unclickable code block.
+  text = text.replace(/```[\w]*\n?\s*(\[[^\]]+\]\([^)]+\)|https?:\/\/\S+)\s*\n?```/g, '$1');
+
   // 1. Convert Markdown code blocks FIRST, and escape their content
   text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`);
 
@@ -306,6 +315,9 @@ function sanitizeHTML(text: string): string {
         .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
         .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
         .replace(/__(.*?)__/g, '<b>$1</b>')
+        // FIX: bare Markdown links [text](url) were never converted, so they
+        // showed up as literal "[text](url)" text instead of a tappable link.
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, href) => `<a href="${href.replace(/&/g, '&amp;')}">${label}</a>`)
     }
   }
   text = result
