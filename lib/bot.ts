@@ -168,7 +168,7 @@ bot.command('start', async (ctx) => {
       `• /time &lt;city&gt; — current time anywhere\n` +
       `• /encode &lt;text&gt; — Base64 & URL encode\n` +
       `• /hash &lt;text&gt; — MD5 & SHA256 hash\n` +
-      `• /github &lt;query&gt; — search GitHub repos\n\n` +
+      `• /github &lt;query&gt; [count] — search GitHub repos (default 10, max 30)\n\n` +
       `<b>Inline Mode:</b>\n` +
       `• @botname &lt;query&gt; — AI anywhere\n` +
       `• @botname imagine &lt;prompt&gt; — generate image anywhere`;
@@ -500,7 +500,7 @@ bot.command('help', async (ctx) => {
     `/time &lt;city&gt; — current time anywhere\n` +
     `/encode &lt;text&gt; — Base64 & URL encode\n` +
     `/hash &lt;text&gt; — MD5 & SHA256 hash\n` +
-    `/github &lt;query&gt; — search GitHub repos\n\n` +
+    `/github &lt;query&gt; [count] — search GitHub repos (default 10, max 30)\n\n` +
     `<b>Inline:</b>\n` +
     `@botname &lt;query&gt; — AI anywhere\n` +
     `@botname imagine &lt;prompt&gt; — image anywhere` +
@@ -1119,17 +1119,28 @@ bot.command('hash', async (ctx) => {
 
 bot.command('github', async (ctx) => {
   if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
-  const query = ctx.match.trim()
-  if (!query) return ctx.reply('Usage: /github <query>\nExample: /github music player cli')
+  const raw = ctx.match.trim()
+  if (!raw) return ctx.reply('Usage: /github <query> [count]\nExample: /github music player cli 15\n(count defaults to 10, max 30 — the search itself always covers all of GitHub, this just controls how many results get shown)')
+
+  // Optional trailing number sets how many results to show, e.g. "music player 15".
+  const tokens = raw.split(/\s+/)
+  const last = tokens[tokens.length - 1]
+  let count = 10
+  let query = raw
+  if (/^\d+$/.test(last) && tokens.length > 1) {
+    count = Math.min(30, Math.max(1, parseInt(last, 10)))
+    query = tokens.slice(0, -1).join(' ')
+  }
+
   const msg = await ctx.reply('🔍 Searching GitHub...')
   try {
-    const repos = await searchRepos(query)
+    const repos = await searchRepos(query, count)
     if (repos.length === 0) {
       return ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ No repos found for: ${escapeHTML(query)}`, { parse_mode: 'HTML' })
     }
     const body = repos.map(formatRepo).join('\n\n')
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
-      `🐙 <b>GitHub results for "${escapeHTML(query)}":</b>\n\n${body}`,
+      `🐙 <b>GitHub results for "${escapeHTML(query)}" (${repos.length}):</b>\n\n${body}`,
       { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
     )
   } catch (err) {
