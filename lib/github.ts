@@ -4,8 +4,8 @@
 // requests are capped at 10 req/min and 60 req/hour. Set GITHUB_TOKEN (a
 // classic PAT with no scopes, or a fine-grained token with no permissions,
 // is enough for public search) to raise that to 30 req/min / 5000 req/hour.
-// A token is also strongly recommended because of the existence check below,
-// which burns extra requests against that same rate limit.
+// A token is strongly recommended: it also raises GitHub's "secondary" abuse
+// rate limit, which the existence check below can otherwise trip.
 
 export interface GithubRepo {
   id: number
@@ -47,22 +47,34 @@ function mapRepo(r: any): GithubRepo {
 
 // GitHub's search index lags behind reality — it can keep serving repos
 // that were since deleted, renamed, or made private, so a result can 404
-// when you actually open it. This confirms a repo is still really there
-// before it's shown.
+// when you actually open it.
+//
+// FIX: this used to check all candidates concurrently via Promise.all and
+// treat any non-200 as "doesn't exist" — but firing that many requests at
+// once trips GitHub's secondary/abuse rate limiter, which returns 403 for
+// perfectly real repos too. That was silently deleting valid, even
+// high-star results (including exact top matches) from the results.
+// Now: only an explicit 404 counts as "gone" (403/5xx/network errors are
+// treated as "can't confirm, so keep it" — fail open, not closed), and
+// checks run sequentially, stopping as soon as we have enough, instead of
+// firing a burst of concurrent requests.
 async function repoExists(fullName: string): Promise<boolean> {
   try {
     const res = await fetch(`https://api.github.com/repos/${fullName}`, { headers: authHeaders() })
-    return res.ok
+    if (res.status === 404) return false
+    return true
   } catch {
-    return false
+    return true
   }
 }
 
-// e.g. /github music player
+// e.g. /github music player, or /github music player 20 for more results
 export async function searchRepos(query: string, perPage = 5): Promise<GithubRepo[]> {
-  // Fetch extra candidates since some will get filtered out by the existence
-  // check below (stale search-index entries).
-  const fetchCount = perPage * 3
+  // Fetch a modest buffer beyond what's needed, in case a few get filtered
+  // out as confirmed-gone. Kept small (not perPage*N) because each extra
+  // candidate costs one more sequential existence-check request — with
+  // large perPage values that adds up and risks the function timeout.
+  const fetchCount = Math.min(100, perPage + 10)
   const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${fetchCount}`
   const res = await fetch(url, { headers: authHeaders() })
   if (!res.ok) {
@@ -72,8 +84,12 @@ export async function searchRepos(query: string, perPage = 5): Promise<GithubRep
   const data = await res.json()
   const candidates: GithubRepo[] = (data.items ?? []).map(mapRepo)
 
-  const checked = await Promise.all(candidates.map(async (r) => ({ r, ok: await repoExists(r.fullName) })))
-  return checked.filter(c => c.ok).map(c => c.r).slice(0, perPage)
+  const results: GithubRepo[] = []
+  for (const repo of candidates) {
+    if (results.length >= perPage) break
+    if (await repoExists(repo.fullName)) results.push(repo)
+  }
+  return results
 }
 
 export function formatRepo(repo: GithubRepo): string {
