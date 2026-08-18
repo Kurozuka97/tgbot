@@ -1,6 +1,7 @@
 import { Bot, InputFile, InlineKeyboard } from 'grammy'
 import { registerLosslessHandler } from './lossless'
 import { evaluate } from 'mathjs'
+import { searchRepos, formatRepo } from './github'
 import {
   chat, chatWithSearch, fileToGenerativePart,
   getUserProvider, setUserProvider, getFreeModelList, MISTRAL_MODELS,
@@ -166,7 +167,8 @@ bot.command('start', async (ctx) => {
       `• /currency &lt;amount&gt; &lt;from&gt; &lt;to&gt; — convert currency\n` +
       `• /time &lt;city&gt; — current time anywhere\n` +
       `• /encode &lt;text&gt; — Base64 & URL encode\n` +
-      `• /hash &lt;text&gt; — MD5 & SHA256 hash\n\n` +
+      `• /hash &lt;text&gt; — MD5 & SHA256 hash\n` +
+      `• /github &lt;query&gt; — search GitHub repos\n\n` +
       `<b>Inline Mode:</b>\n` +
       `• @botname &lt;query&gt; — AI anywhere\n` +
       `• @botname imagine &lt;prompt&gt; — generate image anywhere`;
@@ -497,7 +499,8 @@ bot.command('help', async (ctx) => {
     `/currency &lt;amount&gt; &lt;from&gt; &lt;to&gt; — convert currency\n` +
     `/time &lt;city&gt; — current time anywhere\n` +
     `/encode &lt;text&gt; — Base64 & URL encode\n` +
-    `/hash &lt;text&gt; — MD5 & SHA256 hash\n\n` +
+    `/hash &lt;text&gt; — MD5 & SHA256 hash\n` +
+    `/github &lt;query&gt; — search GitHub repos\n\n` +
     `<b>Inline:</b>\n` +
     `@botname &lt;query&gt; — AI anywhere\n` +
     `@botname imagine &lt;prompt&gt; — image anywhere` +
@@ -1112,6 +1115,26 @@ bot.command('hash', async (ctx) => {
     `#️⃣ <b>Hashes:</b>\n\n<b>MD5:</b>\n<code>${md5}</code>\n\n<b>SHA256:</b>\n<code>${sha256}</code>`,
     { parse_mode: 'HTML' }
   )
+})
+
+bot.command('github', async (ctx) => {
+  if (!await isAllowed(ctx.from?.id ?? 0)) return ctx.reply('⛔ Unauthorized.')
+  const query = ctx.match.trim()
+  if (!query) return ctx.reply('Usage: /github <query>\nExample: /github music player cli')
+  const msg = await ctx.reply('🔍 Searching GitHub...')
+  try {
+    const repos = await searchRepos(query)
+    if (repos.length === 0) {
+      return ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ No repos found for: ${escapeHTML(query)}`, { parse_mode: 'HTML' })
+    }
+    const body = repos.map(formatRepo).join('\n\n')
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+      `🐙 <b>GitHub results for "${escapeHTML(query)}":</b>\n\n${body}`,
+      { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
+    )
+  } catch (err) {
+    await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Failed: ${escapeHTML(String(err))}`)
+  }
 })
 
 // ─── Admin Upgrade Commands ───────────────────────────────────────────────────
