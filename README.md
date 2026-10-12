@@ -8,7 +8,7 @@ Google Firestore + Groq / Mistral / OpenRouter AI providers. Deploys to Vercel.
 - 💬 Free-form AI chat with per-user history, personas, and provider switching
 - 🔍 Live web search (`/search`) — DuckDuckGo HTML, no API key needed
 - 📄 Page summarization, code/story/debate generators
-- 🎨 Image generation (`/imagine`, `/sticker`) via OpenRouter image models — billed per image on your OpenRouter account (~$0.01–0.04 each)
+- 🎨 Image generation (`/imagine`, `/sticker`) — **free via Gemini API tier** (~500 images/day, key from [AI Studio](https://aistudio.google.com/apikey)), or paid via OpenRouter (~$0.01–0.04/image)
 - 🖼️ Photo/document analysis (vision), `/roastme` via caption
 - 🎮 Fun & utility: jokes, QR, calculator, URL shortener, currency, time,
   Base64/URL encode, MD5/SHA256 hash, GitHub search
@@ -37,7 +37,9 @@ Firestore credentials.
 | `BOT_TOKEN` | yes | Telegram bot token from @BotFather |
 | `ADMIN_ID` | yes | Your numeric Telegram user ID |
 | `WEBHOOK_SECRET` | yes | Random secret (`openssl rand -hex 32`) validated per request |
-| `GROQ_API_KEY` / `MISTRAL_API_KEY` / `OPENROUTER_API_KEY` | one of | AI providers; `OPENROUTER_API_KEY` also powers `/imagine` image generation (needs credit, ~$0.01–0.04/image) |
+| `GROQ_API_KEY` / `MISTRAL_API_KEY` / `OPENROUTER_API_KEY` | one of | AI chat providers |
+| `GEMINI_API_KEY` | no (free images) | `/imagine` + `/sticker` via Gemini free tier — get a key at [AI Studio](https://aistudio.google.com/apikey), ~500 images/day, no credit card |
+| `OPENROUTER_API_KEY` | alt for images | Paid image fallback (~$0.01–0.04/image) when `GEMINI_API_KEY` is unset |
 | `FIREBASE_PROJECT_ID` / `FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY` | yes | Firestore service account |
 | `GITHUB_TOKEN` | no | Higher GitHub search rate limits |
 | `DAILY_AI_LIMIT` | no | Per-user AI calls/day (default `50`) |

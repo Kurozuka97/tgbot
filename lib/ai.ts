@@ -301,18 +301,77 @@ async function openrouterChat(messages: Message[], specificModel?: string): Prom
   return data.choices[0].message.content
 }
 
-// ─── Image generation (OpenRouter Images API) ────────────────────────────────
-// Pollinations' free tier died (x402 paywall), so /imagine bills through the
-// user's existing OpenRouter account instead. Each call costs real money
-// (~$0.01–0.04), so NO retries — one attempt, clear error.
+// ─── Image generation ────────────────────────────────────────────────────────
+// Pollinations' free tier died (x402 paywall). Two real providers now:
+//   1. Gemini free tier (GEMINI_API_KEY, free from aistudio.google.com —
+//      ~500 images/day, no credit card) — the DEFAULT when the key is set
+//   2. OpenRouter Images API (OPENROUTER_API_KEY, billed ~$0.01–0.04/image)
+// IMAGE_PROVIDER=gemini|openrouter forces one; unset = auto (gemini if
+// GEMINI_API_KEY exists, else openrouter). No silent paid fallback — a
+// Gemini rate-limit error surfaces instead of quietly spending money.
 const IMAGE_TIMEOUT_MS = 50_000
 
 export async function generateImage(
   prompt: string,
   opts: { resolution?: '512' | '1K' | '2K' | '4K' } = {},
 ): Promise<{ buffer: Buffer; mediaType: string }> {
+  const provider = process.env.IMAGE_PROVIDER
+    || (process.env.GEMINI_API_KEY ? 'gemini' : 'openrouter')
+  if (provider === 'gemini') return geminiImage(prompt)
+  return openrouterImage(prompt, opts)
+}
+
+// Gemini free-tier image generation (generateContent API, base64 inline).
+async function geminiImage(prompt: string): Promise<{ buffer: Buffer; mediaType: string }> {
+  const key = process.env.GEMINI_API_KEY
+  if (!key) {
+    throw new Error('Image generation is not configured — set GEMINI_API_KEY (free) or OPENROUTER_API_KEY.')
+  }
+  const model = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image'
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': key,
+      },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS)
+    }
+  )
+
+  const json = await res.json().catch(() => null) as any
+  if (!res.ok) {
+    const msg: string = json?.error?.message ?? `HTTP ${res.status}`
+    if (res.status === 429) throw new Error('Gemini free-tier rate limit — try again in a minute.')
+    if (res.status === 403 || /API_KEY_INVALID|api key/i.test(msg)) {
+      throw new Error('Gemini rejected the API key — get a free one at aistudio.google.com/apikey.')
+    }
+    throw new Error(`Gemini image error: ${msg}`)
+  }
+
+  const parts = json?.candidates?.[0]?.content?.parts ?? []
+  for (const part of parts) {
+    if (part.inlineData?.data) {
+      const buffer = Buffer.from(part.inlineData.data, 'base64')
+      if (buffer.length > 0) {
+        return { buffer, mediaType: part.inlineData.mimeType ?? 'image/png' }
+      }
+    }
+  }
+  throw new Error('Gemini returned no image — the prompt may have been refused. Try rewording it.')
+}
+
+// OpenRouter Images API — billed per image on the user's account.
+async function openrouterImage(
+  prompt: string,
+  opts: { resolution?: '512' | '1K' | '2K' | '4K' },
+): Promise<{ buffer: Buffer; mediaType: string }> {
   const key = process.env.OPENROUTER_API_KEY
-  if (!key) throw new Error('Image generation is not configured (OPENROUTER_API_KEY missing).')
+  if (!key) {
+    throw new Error('Image generation is not configured — set GEMINI_API_KEY (free) or OPENROUTER_API_KEY.')
+  }
 
   const model = process.env.OPENROUTER_IMAGE_MODEL || 'google/gemini-3.1-flash-image'
   const res = await fetch('https://openrouter.ai/api/v1/images', {
