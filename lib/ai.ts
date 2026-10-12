@@ -301,6 +301,56 @@ async function openrouterChat(messages: Message[], specificModel?: string): Prom
   return data.choices[0].message.content
 }
 
+// ─── Image generation (OpenRouter Images API) ────────────────────────────────
+// Pollinations' free tier died (x402 paywall), so /imagine bills through the
+// user's existing OpenRouter account instead. Each call costs real money
+// (~$0.01–0.04), so NO retries — one attempt, clear error.
+const IMAGE_TIMEOUT_MS = 50_000
+
+export async function generateImage(
+  prompt: string,
+  opts: { resolution?: '512' | '1K' | '2K' | '4K' } = {},
+): Promise<{ buffer: Buffer; mediaType: string }> {
+  const key = process.env.OPENROUTER_API_KEY
+  if (!key) throw new Error('Image generation is not configured (OPENROUTER_API_KEY missing).')
+
+  const model = process.env.OPENROUTER_IMAGE_MODEL || 'google/gemini-3.1-flash-image'
+  const res = await fetch('https://openrouter.ai/api/v1/images', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${key}`,
+      'HTTP-Referer': 'https://kurotgbot.vercel.app',
+      'X-Title': 'KuroTGBot'
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      resolution: opts.resolution ?? '1K',
+      aspect_ratio: '1:1',
+      n: 1,
+    }),
+    signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS)
+  })
+
+  const json = await res.json().catch(() => null) as any
+  if (!res.ok) {
+    const msg: string = json?.error?.message ?? json?.message ?? `HTTP ${res.status}`
+    if (res.status === 401) throw new Error('OpenRouter rejected the API key.')
+    if (res.status === 402 || /credit|billing|payment|insufficient/i.test(msg)) {
+      throw new Error('Image generation needs OpenRouter credit — top up at openrouter.ai/credits.')
+    }
+    if (res.status === 429) throw new Error('OpenRouter rate limit hit — try again in a minute.')
+    throw new Error(`Image service error: ${msg}`)
+  }
+
+  const item = json?.data?.[0]
+  if (!item?.b64_json) throw new Error('Image service returned no image data.')
+  const buffer = Buffer.from(item.b64_json, 'base64')
+  if (buffer.length === 0) throw new Error('Image service returned an empty image.')
+  return { buffer, mediaType: item.media_type ?? 'image/png' }
+}
+
 // ─── User model preference (Firestore) ───────────────────────────────────────
 export async function getUserProvider(userId: number): Promise<{ provider: string; model?: string }> {
   try {

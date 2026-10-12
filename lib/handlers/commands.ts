@@ -16,10 +16,9 @@ import {
   getHistory, appendExchange, clearHistory,
   getPersona, setPersona, PERSONA_LIST,
   setPendingModelSelection, clearPendingModelSelection,
+  generateImage,
 } from '../ai'
 import { addPendingUser } from '../firebase'
-
-const POLLINATIONS = 'https://image.pollinations.ai/prompt/'
 
 function helpText(isAdminUser: boolean): string {
   const adminSection = isAdminUser
@@ -72,7 +71,7 @@ function helpText(isAdminUser: boolean): string {
     `/github &lt;query&gt; [count] — search GitHub repos (default 10, max 30)\n\n` +
     `<b>Inline:</b>\n` +
     `@botname &lt;query&gt; — AI anywhere\n` +
-    `@botname imagine &lt;prompt&gt; — image anywhere` +
+    `@botname imagine — image generation hint` +
     adminSection
   )
 }
@@ -416,8 +415,8 @@ export function registerCommands(bot: Bot): void {
     if (!prompt) return ctx.reply('Usage: /sticker <prompt>')
     try {
       const stickerPrompt = `${prompt}, sticker art style, bold outlines, vibrant colors, white background, cute kawaii style`
-      const url = `${POLLINATIONS}${encodeURIComponent(stickerPrompt)}?width=512&height=512&nologo=true&seed=${Date.now()}`
-      await ctx.replyWithPhoto(url, { caption: `🎭 ${prompt}` })
+      const { buffer } = await generateImage(stickerPrompt, { resolution: '512' })
+      await ctx.replyWithPhoto(new InputFile(buffer, 'sticker.jpg'), { caption: `🎭 ${prompt}` })
     } catch (err) {
       await ctx.reply(`❌ Failed: ${errMsg(err)}`, { parse_mode: 'HTML' })
     }
@@ -436,19 +435,34 @@ export function registerCommands(bot: Bot): void {
     }
 
     let styleLabel = ''
-    for (const [flag, style] of Object.entries(styleMap)) {
+    let style = ''
+    for (const [flag, s] of Object.entries(styleMap)) {
       if (prompt.includes(flag)) {
-        prompt = prompt.replace(flag, '').trim() + ', ' + style
+        prompt = prompt.replace(flag, '')
+        style = s
         styleLabel = ` (${flag.replace('--', '')})`
         break
       }
     }
+    // Flag removal can leave stray commas/spacing — "/imagine --anime" would
+    // otherwise become ", anime art style…". Keep legitimate internal commas
+    // ("/imagine cat, wearing hat") intact.
+    prompt = prompt
+      .replace(/^[\s,]+/, '')
+      .replace(/[\s,]+$/, '')
+      .replace(/,{2,}/g, ',')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+    const displayPrompt = prompt
+    if (style) prompt = prompt ? `${prompt}, ${style}` : style
 
     const msg = await ctx.reply('🎨 Generating image...')
     try {
-      const url = `${POLLINATIONS}${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`
-      await ctx.api.deleteMessage(ctx.chat.id, msg.message_id)
-      await ctx.replyWithPhoto(url, { caption: `🎨 ${ctx.match.trim()}${styleLabel}` })
+      const { buffer } = await generateImage(prompt)
+      await ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {})
+      await ctx.replyWithPhoto(new InputFile(buffer, 'image.jpg'), {
+        caption: `🎨 ${displayPrompt || style}${styleLabel}`
+      })
     } catch (err) {
       // The loading message may already be deleted — nested catch so the
       // failure to edit it doesn't swallow the real error message.

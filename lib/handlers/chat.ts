@@ -124,13 +124,18 @@ export function registerChatHandlers(bot: Bot): void {
 
     try {
       if (isImage) {
-        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`
+        // Inline results must reference a URL — they can't carry uploaded
+        // bytes — and image generation now bills through OpenRouter instead
+        // of returning a public URL. Point users at /imagine, which uploads
+        // the generated image directly.
         return ctx.answerInlineQuery([{
-          type: 'photo',
-          id: '1',
-          photo_url: url,
-          thumbnail_url: url,
-          caption: `🎨 ${prompt}`
+          type: 'article',
+          id: 'imagine',
+          title: '🎨 Image generation',
+          input_message_content: {
+            message_text: '🎨 Use <b>/imagine</b> in a chat with me: <code>/imagine a cat --anime</code>'
+          },
+          description: 'Send /imagine &lt;prompt&gt; to the bot'
         }], { cache_time: 0 }).catch(() => {})
       }
 
