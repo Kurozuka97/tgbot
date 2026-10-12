@@ -113,11 +113,17 @@ export async function isUserAllowed(userId: number): Promise<boolean> {
 export async function getApprovedUsers(): Promise<UserRecord[]> {
   if (!db) return []
   try {
+    // NOTE: no .orderBy() here — a where('status') + orderBy('approvedAt')
+    // query needs a composite index Firestore won't auto-create, and the
+    // resulting FAILED_PRECONDITION used to be swallowed by this catch,
+    // silently emptying /users, /stats and /broadcast. The list is small;
+    // sort it in memory instead.
     const snap = await db.collection('users')
       .where('status', '==', 'approved')
-      .orderBy('approvedAt', 'desc')
       .get()
-    return snap.docs.map(d => d.data() as UserRecord)
+    return snap.docs
+      .map(d => d.data() as UserRecord)
+      .sort((a, b) => (b.approvedAt ?? 0) - (a.approvedAt ?? 0))
   } catch (error) {
     console.error('Error getting approved users:', error)
     return []
@@ -237,7 +243,10 @@ export async function addPendingUser(user: {
   firstName?: string
   languageCode?: string
 }): Promise<{ ok: boolean; cooldownMs?: number }> {
-  if (!db) return { ok: false }
+  if (!db) {
+    console.error('[firebase] addPendingUser: Firestore not initialized')
+    return { ok: false, cooldownMs: 0 }
+  }
   const ref = db.collection('pending_users').doc(String(user.userId))
   const now = Date.now()
 
@@ -358,28 +367,7 @@ export async function getStats(): Promise<{ totalUsers: number; totalMessages: n
   }
 }
 
-// ─── Mood Log ─────────────────────────────────────────────────────────────────
-
-export async function logMood(userId: number, mood: string): Promise<void> {
-  if (!db) return
-  await db.collection('mood_log').add({ userId, mood, timestamp: Date.now() })
-}
-
-export async function getMoodLog(userId: number, limit = 10): Promise<{ mood: string; timestamp: number }[]> {
-  if (!db) return []
-  try {
-    const snap = await db.collection('mood_log')
-      .where('userId', '==', userId)
-      .orderBy('timestamp', 'desc')
-      .limit(limit)
-      .get()
-    return snap.docs.map(d => ({ mood: d.data().mood, timestamp: d.data().timestamp }))
-  } catch (error) {
-    console.error('Error getting mood log:', error)
-    return []
-  }
-}
-
+// ─── Audit Log ────────────────────────────────────────────────────────────────
 
 export async function logAudit(entry: AuditEntry): Promise<void> {
   if (!db) return

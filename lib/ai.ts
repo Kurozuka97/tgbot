@@ -2,6 +2,15 @@
 // Priority: Groq → Mistral → OpenRouter (rotate free models)
 
 import { db } from './firebase'
+import { sanitizeHTML } from './html'
+
+// A hung provider request used to stall the whole webhook until Vercel killed
+// the function. Every outbound call now gets a hard timeout.
+const FETCH_TIMEOUT_MS = 20_000
+
+function providerSignal(): AbortSignal {
+  return AbortSignal.timeout(FETCH_TIMEOUT_MS)
+}
 
 const HTML_FORMAT_RULE = `
 
@@ -81,16 +90,23 @@ export async function getHistory(userId: number): Promise<Message[]> {
   } catch { return [] }
 }
 
-export async function appendHistory(userId: number, role: 'user' | 'assistant', content: string): Promise<void> {
+// Persist a full user→assistant exchange in ONE transaction. The old code did
+// two separate transactions, which could interleave with concurrent messages
+// and drop one half of the pair.
+export async function appendExchange(
+  userId: number,
+  userText: string,
+  assistantText: string,
+): Promise<void> {
   try {
     if (!db) return
     const ref = db.collection('tgbot_history').doc(String(userId))
     await db.runTransaction(async (t) => {
       const doc = await t.get(ref)
       const messages: Message[] = doc.exists ? (doc.data()?.messages ?? []) : []
-      messages.push({ role, content })
-      const trimmed = messages.slice(-MAX_HISTORY)
-      t.set(ref, { messages: trimmed }, { merge: true })
+      messages.push({ role: 'user', content: userText })
+      messages.push({ role: 'assistant', content: assistantText })
+      t.set(ref, { messages: messages.slice(-MAX_HISTORY) }, { merge: true })
     })
   } catch {}
 }
@@ -133,7 +149,8 @@ async function groqChat(messages: Message[]): Promise<string> {
       model: 'llama-3.3-70b-versatile',
       messages,
       max_tokens: 1024
-    })
+    }),
+    signal: providerSignal()
   })
   if (!res.ok) throw new Error(`Groq: ${res.status}`)
   const data = await res.json()
@@ -160,7 +177,8 @@ async function groqVision(prompt: string, imageData: string, mimeType: string, s
         }
       ],
       max_tokens: 1024
-    })
+    }),
+    signal: providerSignal()
   })
   if (!res.ok) throw new Error(`Groq Vision: ${res.status}`)
   const data = await res.json()
@@ -175,7 +193,8 @@ async function mistralChat(messages: Message[], model = 'mistral-small-latest'):
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`
     },
-    body: JSON.stringify({ model, messages, max_tokens: 1024 })
+    body: JSON.stringify({ model, messages, max_tokens: 1024 }),
+    signal: providerSignal()
   })
   if (!res.ok) throw new Error(`Mistral: ${res.status}`)
   const data = await res.json()
@@ -202,7 +221,8 @@ async function mistralVision(prompt: string, imageData: string, mimeType: string
         }
       ],
       max_tokens: 1024
-    })
+    }),
+    signal: providerSignal()
   })
   if (!res.ok) throw new Error(`Mistral Vision: ${res.status}`)
   const data = await res.json()
@@ -221,16 +241,24 @@ export const MISTRAL_MODELS: Record<string, string> = {
 }
 
 // ─── OpenRouter (auto-fetch & rotate all free models) ────────────────────────
+// NOTE: these are per-instance module caches. On serverless each instance has
+// its own rotation index — that's fine, it only exists to spread requests
+// across models, not to hold user state.
 let freeModels: string[] = []
 let modelIndex = 0
 let lastFetched = 0
+
+// Telegram messages cap at 4096 chars — listing 100+ models blows that and the
+// send fails. Keep the selectable list short.
+export const MAX_SELECTABLE_MODELS = 30
 
 async function fetchFreeModels(): Promise<string[]> {
   const now = Date.now()
   if (freeModels.length > 0 && now - lastFetched < 3600000) return freeModels
 
   const res = await fetch('https://openrouter.ai/api/v1/models', {
-    headers: { 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` }
+    headers: { 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+    signal: providerSignal()
   })
   if (!res.ok) throw new Error(`OpenRouter models fetch: ${res.status}`)
   const data = await res.json()
@@ -265,111 +293,12 @@ async function openrouterChat(messages: Message[], specificModel?: string): Prom
       'HTTP-Referer': 'https://kurotgbot.vercel.app',
       'X-Title': 'KuroTGBot'
     },
-    body: JSON.stringify({ model, messages, max_tokens: 1024 })
+    body: JSON.stringify({ model, messages, max_tokens: 1024 }),
+    signal: providerSignal()
   })
   if (!res.ok) throw new Error(`OpenRouter: ${res.status}`)
   const data = await res.json()
   return data.choices[0].message.content
-}
-
-// ─── HTML Sanitizer ───────────────────────────────────────────────────────────
-// Strips any leaked XML/tool-call tags from AI output, then escapes bare
-// & < > that are NOT part of allowed Telegram HTML tags so the message
-// never triggers a Telegram parse error.
-
-function sanitizeWithAI(text: string): Promise<string> {
-  return Promise.resolve(sanitizeHTML(text))
-}
-
-function sanitizeHTML(text: string): string {
-  const allowed = new Set(['b', 'code', 'pre', 'a', 'tg-spoiler']);
-
-  // 0. Strip MarkdownV2 backslash escapes that models sometimes output
-  // FIX: the character class here was malformed — `[_*[\]()]` closed right after
-  // `()`, so everything after it (`~`>#+\-=|{}.!\\`) was matched as literal
-  // characters/alternation outside the class instead of being part of it, e.g. the
-  // bare `|` inside the group turned it into an alternation. Wrapping the full set
-  // inside a single character class fixes it.
-  text = text.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, '$1');
-
-  // 0.5 Some models wrap a plain link in a fenced code block for no reason
-  // (often with a bogus "```undefined" language tag) instead of following the
-  // "links use <a href>, not code fences" rule. Unwrap those before the real
-  // code-block handling below, so the link gets converted properly instead of
-  // showing up as a literal, unclickable code block.
-  text = text.replace(/```[\w]*\n?\s*(\[[^\]]+\]\([^)]+\)|https?:\/\/\S+)\s*\n?```/g, '$1');
-
-  // 1. Convert Markdown code blocks FIRST, and escape their content
-  text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${escapeHTMLEntities(code.trim())}</pre>`);
-
-  // 2. Convert inline code — escape content inside
-  text = text.replace(/`([^`\n]+)`/g, (_, code) => `<code>${escapeHTMLEntities(code)}</code>`);
-
-  // 3. Strip <i>, <u>, <s>, <em> tags with word boundary (keep inner content)
-  text = text.replace(/<\/?(i|u|s|em)\b[^>]*>/gi, '');
-
-  // 4. Convert Markdown formatting ONLY outside <pre>/<code> blocks
-  //    Track open/close state to know which parts are inside code blocks
-  const segments = text.split(/(<\/?(?:pre|code)>)/gi)
-  let inCodeBlock = false
-  let result = ''
-  for (const segment of segments) {
-    if (segment.match(/^<\/?(pre|code)>$/i)) {
-      inCodeBlock = segment.startsWith('</')
-      result += segment
-    } else if (inCodeBlock) {
-      result += segment
-    } else {
-      result += segment
-        .replace(/\*\*\*(.*?)\*\*\*/g, '<b>$1</b>')
-        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-        .replace(/__(.*?)__/g, '<b>$1</b>')
-        // FIX: bare Markdown links [text](url) were never converted, so they
-        // showed up as literal "[text](url)" text instead of a tappable link.
-        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, href) => `<a href="${href.replace(/&/g, '&amp;')}">${label}</a>`)
-    }
-  }
-  text = result
-
-  // 5. Strip any disallowed HTML tags but keep content
-  text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?\>/g, (match, tag: string) => {
-    return allowed.has(tag.toLowerCase()) ? match : ''
-  });
-
-  // 6. Remove attributes from allowed tags, EXCEPT href on <a>
-  text = text.replace(/<(b|code|pre|tg-spoiler)(\s[^>]*)?>/gi, '<$1>');
-  text = text.replace(/<a\s+href="([^"]*)"[^>]*>/gi, '<a href="$1">');
-
-  // 7. Convert Markdown headers to bold — only outside <pre>/<code>
-  const segments2 = text.split(/(<\/?(?:pre|code)>)/gi)
-  inCodeBlock = false
-  result = ''
-  for (const segment of segments2) {
-    if (segment.match(/^<\/?(pre|code)>$/i)) {
-      inCodeBlock = segment.startsWith('</')
-      result += segment
-    } else if (inCodeBlock) {
-      result += segment
-    } else {
-      result += segment.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
-    }
-  }
-  text = result
-
-  // 8. Escape bare & < > that are NOT part of allowed Telegram HTML tags
-  //    This prevents Telegram parse errors from unescaped entities in normal text
-  text = text.replace(/&(?!(amp|lt|gt|quot);)/g, '&amp;')
-  // Escape bare < that are not part of allowed tags
-  text = text.replace(/<(?!\/?(b|i|u|s|code|pre|a|tg-spoiler)(\s[^>]*)?>)/g, '&lt;')
-
-  return text.trim();
-}
-
-function escapeHTMLEntities(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
 }
 
 // ─── User model preference (Firestore) ───────────────────────────────────────
@@ -394,7 +323,56 @@ export async function setUserProvider(userId: number, provider: string, model?: 
 }
 
 export async function getFreeModelList(): Promise<string[]> {
-  return await fetchFreeModels()
+  const models = await fetchFreeModels()
+  return models.slice(0, MAX_SELECTABLE_MODELS)
+}
+
+// ─── Pending model selection (Firestore, not memory) ─────────────────────────
+// These used to live in in-memory Maps, which on Vercel serverless meant the
+// "reply with a number" prompt and the reply frequently landed on different
+// instances — so the selection silently vanished. Storing it on the prefs doc
+// makes it work across cold starts and instances.
+export interface PendingModelSelection {
+  provider: 'mistral' | 'openrouter'
+  models: string[]
+  expiresAt: number
+}
+
+const PENDING_SELECTION_TTL_MS = 10 * 60 * 1000
+
+export async function setPendingModelSelection(
+  userId: number,
+  provider: 'mistral' | 'openrouter',
+  models: string[],
+): Promise<void> {
+  if (!db) return
+  const selection: PendingModelSelection = {
+    provider,
+    models,
+    expiresAt: Date.now() + PENDING_SELECTION_TTL_MS,
+  }
+  await db.collection('tgbot_prefs').doc(String(userId)).set({ pendingModel: selection }, { merge: true })
+}
+
+export async function getPendingModelSelection(userId: number): Promise<PendingModelSelection | null> {
+  try {
+    if (!db) return null
+    const doc = await db.collection('tgbot_prefs').doc(String(userId)).get()
+    const selection = doc.data()?.pendingModel as PendingModelSelection | null | undefined
+    if (!selection || !Array.isArray(selection.models) || !selection.expiresAt) return null
+    if (Date.now() > selection.expiresAt) {
+      await clearPendingModelSelection(userId)
+      return null
+    }
+    return selection
+  } catch {
+    return null
+  }
+}
+
+export async function clearPendingModelSelection(userId: number): Promise<void> {
+  if (!db) return
+  await db.collection('tgbot_prefs').doc(String(userId)).set({ pendingModel: null }, { merge: true })
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -417,8 +395,8 @@ export async function chat(
 
   // Vision request
   if (imageParts.length > 0) {
-    try { return await sanitizeWithAI(await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
-    try { return await sanitizeWithAI(await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
+    try { return sanitizeHTML(await groqVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
+    try { return sanitizeHTML(await mistralVision(prompt, imageParts[0].data, imageParts[0].mimeType, systemPrompt)) } catch {}
     const visionMessages: Message[] = [
       { role: 'system', content: systemPrompt },
       ...history,
@@ -430,7 +408,7 @@ export async function chat(
         ]
       }
     ]
-    try { return await sanitizeWithAI(await openrouterChat(visionMessages)) } catch {}
+    try { return sanitizeHTML(await openrouterChat(visionMessages)) } catch {}
     return '❌ Image analysis unavailable right now.'
   }
 
@@ -441,16 +419,16 @@ export async function chat(
   ]
 
   if (provider === 'groq') {
-    try { return await sanitizeWithAI(await groqChat(messages)) } catch {}
+    try { return sanitizeHTML(await groqChat(messages)) } catch {}
     return '❌ Groq unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'mistral') {
     const mistralModel = specificModel ? MISTRAL_MODELS[specificModel] ?? specificModel : 'mistral-small-latest'
-    try { return await sanitizeWithAI(await mistralChat(messages, mistralModel)) } catch {}
+    try { return sanitizeHTML(await mistralChat(messages, mistralModel)) } catch {}
     return '❌ Mistral unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'openrouter') {
-    try { return await sanitizeWithAI(await openrouterChat(messages, specificModel)) } catch {}
+    try { return sanitizeHTML(await openrouterChat(messages, specificModel)) } catch {}
     return '❌ OpenRouter unavailable. Try /model auto to use fallback.'
   }
   if (provider === 'pollinations') {
@@ -458,18 +436,10 @@ export async function chat(
   }
 
   // Auto fallback chain — text only, no pollinations
-  try { return await sanitizeWithAI(await groqChat(messages)) } catch {}
-  try { return await sanitizeWithAI(await mistralChat(messages)) } catch {}
-  try { return await sanitizeWithAI(await openrouterChat(messages)) } catch {}
+  try { return sanitizeHTML(await groqChat(messages)) } catch {}
+  try { return sanitizeHTML(await mistralChat(messages)) } catch {}
+  try { return sanitizeHTML(await openrouterChat(messages)) } catch {}
   return '❌ All AI providers unavailable. Try again later.'
-}
-
-export async function chatWithSearch(prompt: string, userId?: number): Promise<string> {
-  return await chat(
-    `You are a web search assistant. Answer the following query with up-to-date knowledge, structured clearly with key points. Query: ${prompt}`,
-    [],
-    userId
-  )
 }
 
 export function fileToGenerativePart(data: Buffer, mimeType: string) {

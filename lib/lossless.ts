@@ -55,6 +55,7 @@ function parseFilenameBps(fileName: string | undefined): number | null {
 //            [18-21] packed: sample_rate(20b) | channels-1(3b) | bps-1(5b) | ...
 //            bps-1 → bit0 of byte[20] (MSB) + bits7-4 of byte[21]
 async function fetchFlacBitDepth(fileId: string): Promise<number | null> {
+  cleanupBitDepthCache()
   // Check cache first
   const cached = bitDepthCache.get(fileId)
   if (cached && Date.now() - cached.timestamp < BITDEPTH_CACHE_TTL) {
@@ -299,15 +300,19 @@ async function processMedia(
   await editWithRetry(api, chatId, messageId, newCaption)
 }
 
-// Periodic cache cleanup (remove expired entries every 10 minutes)
-if (typeof global !== 'undefined' && !(global as any).__losslessCacheCleanup) {
-  (global as any).__losslessCacheCleanup = true
-  setInterval(() => {
-    const now = Date.now()
-    for (const [key, entry] of bitDepthCache.entries()) {
-      if (now - entry.timestamp > BITDEPTH_CACHE_TTL) {
-        bitDepthCache.delete(key)
-      }
+// Lazy cache cleanup. A module-level setInterval keeps the event loop alive
+// and is a poor fit for serverless — clean up on access instead, like the
+// webhook dedupe map does.
+let lastCacheCleanup = 0
+const CACHE_CLEANUP_INTERVAL = 10 * 60 * 1000
+
+function cleanupBitDepthCache(): void {
+  const now = Date.now()
+  if (now - lastCacheCleanup < CACHE_CLEANUP_INTERVAL) return
+  lastCacheCleanup = now
+  for (const [key, entry] of bitDepthCache.entries()) {
+    if (now - entry.timestamp > BITDEPTH_CACHE_TTL) {
+      bitDepthCache.delete(key)
     }
-  }, 10 * 60 * 1000)
+  }
 }

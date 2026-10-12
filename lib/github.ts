@@ -60,7 +60,10 @@ function mapRepo(r: any): GithubRepo {
 // firing a burst of concurrent requests.
 async function repoExists(fullName: string): Promise<boolean> {
   try {
-    const res = await fetch(`https://api.github.com/repos/${fullName}`, { headers: authHeaders() })
+    const res = await fetch(`https://api.github.com/repos/${fullName}`, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(10_000),
+    })
     if (res.status === 404) return false
     return true
   } catch {
@@ -76,7 +79,7 @@ export async function searchRepos(query: string, perPage = 5): Promise<GithubRep
   // large perPage values that adds up and risks the function timeout.
   const fetchCount = Math.min(100, perPage + 10)
   const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${fetchCount}`
-  const res = await fetch(url, { headers: authHeaders() })
+  const res = await fetch(url, { headers: authHeaders(), signal: AbortSignal.timeout(15_000) })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     throw new Error(`GitHub search failed (${res.status}): ${body.slice(0, 200)}`)
